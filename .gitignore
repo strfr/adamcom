@@ -1,0 +1,33 @@
+# Derleme çıktı ve geçici dosyalar
+*.o
+*.obj
+*.so
+*.a
+*.dll
+*.exe
+*.deb
+*.changes
+*.buildinfo
+*.dsc
+*.tar.*
+/adamcom      # varsa çalışma dizinindeki ikili
+/build/       # eğer build için özel klasör kullanıyorsanız
+
+# IDE/edİtor dosyaları
+*~
+*.swp
+.vscode/
+.idea/
+
+# Linux geçici
+*~
+
+# Dağıtım dışı
+*.log
+
+# Kendini hariç tutma: takip edilecekler
+!.gitignore
+!adamcom.cpp
+!Makefile
+!README.md
+!debian/**

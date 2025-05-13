@@ -1,0 +1,13 @@
+Package: adamcom-dbgsym
+Package-Type: ddeb
+Source: adamcom
+Version: 1.0-1
+Auto-Built-Package: debug-symbols
+Architecture: amd64
+Maintainer: Huseyin B <aawifoa@gmail.com>
+Installed-Size: 57
+Depends: adamcom (= 1.0-1)
+Section: debug
+Priority: optional
+Description: debug symbols for adamcom
+Build-Ids: d7ee2bee398940ccb78fddb6f98213a3ed2fb144
