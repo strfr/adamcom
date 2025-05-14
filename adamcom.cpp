@@ -15,8 +15,11 @@
 #include <vector>
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
+#include <cstdio>
 #include <readline/readline.h>
 #include <readline/history.h>
+#include <readline/keymaps.h>
 #include <sys/select.h>
 
 static volatile bool keep_running = true;
@@ -31,8 +34,9 @@ void usage(const char* prog) {
               << "  -p, --parity       <N|E|O>         parity\n"
               << "  -s, --stop         <1|2>           stop bits\n"
               << "  -f, --flow         <none|hardware|software>  flow control\n"
-              << "  -h, --help                          show this help\n\n"
-              << "If device not found, use -d/--device to specify.\n";
+              << "  --hex                           start in hex mode\n"
+              << "  --normal                        start in normal mode\n"
+              << "  -h, --help                          show this help\n\n";
 }
 
 bool file_exists(const std::string& path) {
@@ -71,7 +75,7 @@ speed_t get_baud(const std::string& s) {
     return it->second;
 }
 
-// Dynamic prompt refresh using readline event hook
+// Dynamic prompt refresh
 static char prompt_buf[64];
 int refresh_prompt() {
     size_t len = strlen(rl_line_buffer);
@@ -98,100 +102,96 @@ int main(int argc, char* argv[]) {
     const char* home = getenv("HOME");
     std::string cfg_path = std::string(home?home:".") + "/.adamcomrc";
 
+    // ensure profile exists
     if (!file_exists(cfg_path)) {
         write_profile(cfg_path, {{"device","/dev/tnt1"},{"baud","115200"},
                                  {"databits","8"},{"parity","N"},
-                                 {"stop","1"},{"flow","none"}});
+                                 {"stop","1"},{"flow","none"},
+                                 {"mode","normal"}});
     }
+    // load & fill defaults, including mode
     auto cfg = read_profile(cfg_path);
     bool fixed = false;
-    for (auto &d : std::vector<std::pair<std::string,std::string>>{
-           {"device","/dev/tnt1"},{"baud","115200"},
-           {"databits","8"},{"parity","N"},
-           {"stop","1"},{"flow","none"}}) {
-        if (cfg[d.first].empty()) { cfg[d.first] = d.second; fixed = true; }
+    std::vector<std::pair<std::string,std::string>> defaults = {
+        {"device","/dev/tnt1"},{"baud","115200"},
+        {"databits","8"},{"parity","N"},
+        {"stop","1"},{"flow","none"},
+        {"mode","normal"}
+    };
+    for (auto &d : defaults) {
+        if (cfg.find(d.first)==cfg.end() || cfg[d.first].empty()) {
+            cfg[d.first] = d.second;
+            fixed = true;
+        }
     }
     if (fixed) write_profile(cfg_path, cfg);
 
-    bool changed = false;
-    for (int i = 1; i < argc; ++i) {
-        std::string a = argv[i];
+    // parse args
+    bool changed=false;
+    for (int i=1; i<argc; ++i) {
+        std::string a=argv[i];
         if (a=="-h"||a=="--help") { usage(argv[0]); return 0; }
         if ((a=="-d"||a=="-D"||a=="--device")&&i+1<argc) {
-            cfg["device"] = argv[++i]; changed = true; continue;
+            cfg["device"]=argv[++i]; changed=true; continue;
         }
         if ((a=="-b"||a=="--baud")&&i+1<argc) {
-            cfg["baud"] = argv[++i]; changed = true; continue;
+            cfg["baud"]=argv[++i]; changed=true; continue;
         }
         if ((a=="-i"||a=="--databits")&&i+1<argc) {
-            cfg["databits"] = argv[++i]; changed = true; continue;
+            cfg["databits"]=argv[++i]; changed=true; continue;
         }
         if ((a=="-p"||a=="--parity")&&i+1<argc) {
-            cfg["parity"] = argv[++i]; changed = true; continue;
+            cfg["parity"]=argv[++i]; changed=true; continue;
         }
         if ((a=="-s"||a=="--stop")&&i+1<argc) {
-            cfg["stop"] = argv[++i]; changed = true; continue;
+            cfg["stop"]=argv[++i]; changed=true; continue;
         }
         if ((a=="-f"||a=="--flow")&&i+1<argc) {
-            cfg["flow"] = argv[++i]; changed = true; continue;
+            cfg["flow"]=argv[++i]; changed=true; continue;
         }
-        std::cerr << "Unknown option: " << a << "\n";
-        usage(argv[0]); return 1;
+        if (a=="--hex")  { cfg["mode"]="hex"; changed=true; continue; }
+        if (a=="--normal"){ cfg["mode"]="normal"; changed=true; continue; }
+        std::cerr<<"Unknown option: "<<a<<"\n"; usage(argv[0]); return 1;
     }
     if (changed) write_profile(cfg_path, cfg);
 
-    int fd = open(cfg["device"].c_str(), O_RDWR|O_NOCTTY);
-    if (fd < 0) {
-        std::cerr << "Error opening " << cfg["device"]
-                  << ": " << strerror(errno) << "\n";
-        return 1;
-    }
+    // open serial
+    int fd = open(cfg["device"].c_str(),O_RDWR|O_NOCTTY);
+    if(fd<0){std::cerr<<"Error opening "<<cfg["device"]<<": "<<strerror(errno)<<"\n";return 1;}
     termios tty;
-    if (tcgetattr(fd, &tty)) { std::cerr<<"tcgetattr error\n"; return 1; }
-    try {
-        speed_t sp = get_baud(cfg["baud"]);
-        cfsetispeed(&tty, sp); cfsetospeed(&tty, sp);
-    } catch (...) {
-        std::cerr<<"Error: invalid baud '"<<cfg["baud"]<<"'.\n"; return 1;
-    }
-    try {
-        int db = std::stoi(cfg["databits"]);
-        tty.c_cflag &= ~CSIZE;
-        switch(db) { case 5:tty.c_cflag|=CS5;break; case 6:tty.c_cflag|=CS6;break;\
-case 7:tty.c_cflag|=CS7;break; case 8:tty.c_cflag|=CS8;break; default:throw 0;}\
-    } catch (...) {
-        std::cerr<<"Error: invalid data-bits.\n"; return 1;
-    }
-    char p = std::toupper(cfg["parity"][0]); tty.c_cflag&=~PARENB;
-    if (p=='E') tty.c_cflag |= PARENB; else if (p=='O') tty.c_cflag |= PARENB|PARODD;
-    try { int sb = std::stoi(cfg["stop"]); tty.c_cflag &= ~CSTOPB; if(sb==2)tty.c_cflag|=CSTOPB; else if(sb!=1)throw 0; } catch(...) { std::cerr<<"Error: invalid stop-bits.\n"; return 1; }
-    tty.c_cflag &= ~CRTSCTS; tty.c_iflag &= ~(IXON|IXOFF|IXANY);
-    if      (cfg["flow"]=="hardware") tty.c_cflag |= CRTSCTS;
-    else if (cfg["flow"]=="software") tty.c_iflag |= (IXON|IXOFF|IXANY);
-    else if (cfg["flow"]!="none")      { std::cerr<<"Error: invalid flow.\n"; return 1;}
-    tty.c_cflag |= CREAD|CLOCAL;
-    tty.c_lflag &= ~(ICANON|ECHO|ECHOE|ISIG);
-    tty.c_iflag &= ~(INLCR|ICRNL|IGNCR);
-    tty.c_oflag &= ~OPOST;
-    if (tcsetattr(fd, TCSANOW, &tty)) { std::cerr<<"tcsetattr error\n"; return 1; }
-    fcntl(fd, F_SETFL, FNDELAY);
+    if(tcgetattr(fd,&tty)){std::cerr<<"tcgetattr error\n";return 1;}
+    try{speed_t sp=get_baud(cfg["baud"]);cfsetispeed(&tty,sp);cfsetospeed(&tty,sp);}catch(...){std::cerr<<"Error: invalid baud\n";return 1;}
+    try{int db=std::stoi(cfg["databits"]);tty.c_cflag&=~CSIZE;switch(db){case 5:tty.c_cflag|=CS5;break;case 6:tty.c_cflag|=CS6;break;case 7:tty.c_cflag|=CS7;break;case 8:tty.c_cflag|=CS8;break;default:throw 0;}}catch(...){std::cerr<<"Error: invalid data-bits\n";return 1;}
+    char pch=std::toupper(cfg["parity"][0]);tty.c_cflag&=~PARENB;if(pch=='E')tty.c_cflag|=PARENB;else if(pch=='O')tty.c_cflag|=PARENB|PARODD;
+    try{int sb=std::stoi(cfg["stop"]);tty.c_cflag&=~CSTOPB;if(sb==2)tty.c_cflag|=CSTOPB;else if(sb!=1)throw 0;}catch(...){std::cerr<<"Error: invalid stop-bits\n";return 1;}
+    tty.c_cflag&=~CRTSCTS;tty.c_iflag&=~(IXON|IXOFF|IXANY);
+    if(cfg["flow"]=="hardware")tty.c_cflag|=CRTSCTS;else if(cfg["flow"]=="software")tty.c_iflag|=(IXON|IXOFF|IXANY);else if(cfg["flow"]!="none"){std::cerr<<"Error: invalid flow\n";return 1;}
+    tty.c_cflag|=CREAD|CLOCAL;tty.c_lflag&=~(ICANON|ECHO|ECHOE|ISIG);tty.c_iflag&=~(INLCR|ICRNL|IGNCR);tty.c_oflag&=~OPOST;
+    if(tcsetattr(fd,TCSANOW,&tty)){std::cerr<<"tcsetattr error\n";return 1;}fcntl(fd,F_SETFL,FNDELAY);
 
     std::cout<<"Connected to "<<cfg["device"]<<". Ctrl-C to exit.\n";
-
-    while (keep_running) {
-        char buf[256]; int n = read(fd, buf, sizeof(buf));
-        if (n>0) {
+    while(keep_running){
+        char buf[256];int n=read(fd,buf,sizeof(buf));
+        if(n>0){
             std::cout<<"\nRX["<<n<<" bytes]: ";
-            for (int i=0;i<n;i++) std::cout<<std::hex<<std::uppercase<<(buf[i]&0xFF)<<" ";
+            for(int i=0;i<n;i++) std::cout<<std::hex<<std::uppercase<<(buf[i]&0xFF)<<" ";
             std::cout<<std::dec<<"\n";
+            rl_forced_update_display();
         }
-        std::string line = read_input_line();
-        if (!line.empty()) {
-            int w = write(fd, line.c_str(), line.size());
+        std::string line=read_input_line();
+        if(line.empty()) continue;
+        if(cfg["mode"]=="hex"){
+            std::string s;for(char c:line) if(!std::isspace(c)) s.push_back(c);
+            if(s.size()%2){std::cerr<<"Error: hex input length must be even\n";continue;}
+            std::vector<uint8_t> data;
+            try{for(size_t i=0;i<s.size();i+=2){int b=std::stoi(s.substr(i,2),nullptr,16);data.push_back(uint8_t(b));}}catch(...){std::cerr<<"Error: invalid hex input\n";continue;}
+            write(fd,data.data(),data.size());
+            std::cout<<"TX["<<data.size()<<" bytes]: "; for(auto b:data) std::printf("0x%02X ",b); std::cout<<"\n";
+        } else {
+            int w=write(fd,line.c_str(),line.size());
             std::cout<<"TX["<<w<<" bytes]\n";
         }
     }
-
     close(fd);
     std::cout<<"Disconnected.\n";
     return 0;
