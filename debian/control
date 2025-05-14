@@ -2,7 +2,7 @@ Source: adamcom
 Section: utils
 Priority: optional
 Maintainer: Huseyin B <aawifoa@gmail.com>
-Build-Depends: debhelper (>= 11)
+Build-Depends: debhelper (>= 11), libreadline-dev
 Standards-Version: 4.5.1
 Homepage: https://example.com/adamcom
 

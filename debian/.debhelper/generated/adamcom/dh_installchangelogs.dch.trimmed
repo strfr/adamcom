@@ -1,5 +1,7 @@
-adamcom (1.0-1) unstable; urgency=medium
+adamcom (1.0-2) unstable; urgency=medium
 
-  * Initial release.
-
+  * Added history support
+  * Added arrow keys support
+  * Device Parameter setting now reacts -D
+  * Added Byte count support
  -- Huseyin B <aawifoa@gmail.com>  Wed, 13 May 2025 16:30:00 +0300
