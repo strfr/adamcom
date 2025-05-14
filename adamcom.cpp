@@ -55,17 +55,15 @@ std::map<std::string,std::string> read_profile(const std::string& path) {
 void write_profile(const std::string& path,
                    const std::map<std::string,std::string>& cfg) {
     std::ofstream out(path, std::ofstream::trunc);
-    for (auto& kv : cfg) {
-        out << kv.first << "=" << kv.second << "\n";
-    }
+    for (auto& kv : cfg) out << kv.first << "=" << kv.second << "\n";
 }
 
 speed_t get_baud(const std::string& s) {
     static const std::map<int, speed_t> m = {
-        { 9600,   B9600   },{19200,   B19200  },{38400,   B38400 },
-        {57600,   B57600  },{115200,  B115200 },{230400,  B230400},
-        {460800,  B460800},{500000,  B500000 },{576000,  B576000},
-        {921600,  B921600}
+        {9600,B9600},{19200,B19200},{38400,B38400},
+        {57600,B57600},{115200,B115200},{230400,B230400},
+        {460800,B460800},{500000,B500000},{576000,B576000},
+        {921600,B921600}
     };
     int r = std::stoi(s);
     auto it = m.find(r);
@@ -73,9 +71,21 @@ speed_t get_baud(const std::string& s) {
     return it->second;
 }
 
-// Uses GNU Readline for full line-editing & history support
+// Dynamic prompt refresh using readline event hook
+static char prompt_buf[64];
+int refresh_prompt() {
+    size_t len = strlen(rl_line_buffer);
+    snprintf(prompt_buf, sizeof(prompt_buf), "> (%zu bytes) ", len);
+    rl_set_prompt(prompt_buf);
+    rl_redisplay();
+    return 0;
+}
+
 std::string read_input_line() {
-    char* buf = readline("> ");
+    rl_event_hook = refresh_prompt;
+    snprintf(prompt_buf, sizeof(prompt_buf), "> (0 bytes) ");
+    char* buf = readline(prompt_buf);
+    rl_event_hook = nullptr;
     if (!buf) return {};
     std::string line(buf);
     if (!line.empty()) add_history(buf);
@@ -85,37 +95,24 @@ std::string read_input_line() {
 
 int main(int argc, char* argv[]) {
     signal(SIGINT, sigint_handler);
-
-    // profile path
     const char* home = getenv("HOME");
     std::string cfg_path = std::string(home?home:".") + "/.adamcomrc";
 
-    // create profile if missing
     if (!file_exists(cfg_path)) {
-        write_profile(cfg_path, {
-            {"device","/dev/tnt1"},
-            {"baud","115200"},
-            {"databits","8"},
-            {"parity","N"},
-            {"stop","1"},
-            {"flow","none"}
-        });
+        write_profile(cfg_path, {{"device","/dev/tnt1"},{"baud","115200"},
+                                 {"databits","8"},{"parity","N"},
+                                 {"stop","1"},{"flow","none"}});
     }
-    // load profile and fill defaults
     auto cfg = read_profile(cfg_path);
     bool fixed = false;
     for (auto &d : std::vector<std::pair<std::string,std::string>>{
            {"device","/dev/tnt1"},{"baud","115200"},
            {"databits","8"},{"parity","N"},
            {"stop","1"},{"flow","none"}}) {
-        if (cfg[d.first].empty()) {
-            cfg[d.first] = d.second;
-            fixed = true;
-        }
+        if (cfg[d.first].empty()) { cfg[d.first] = d.second; fixed = true; }
     }
     if (fixed) write_profile(cfg_path, cfg);
 
-    // parse command-line arguments
     bool changed = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -143,103 +140,59 @@ int main(int argc, char* argv[]) {
     }
     if (changed) write_profile(cfg_path, cfg);
 
-    // open serial port
     int fd = open(cfg["device"].c_str(), O_RDWR|O_NOCTTY);
     if (fd < 0) {
         std::cerr << "Error opening " << cfg["device"]
                   << ": " << strerror(errno) << "\n";
         return 1;
     }
-    // configure termios
     termios tty;
-    if (tcgetattr(fd, &tty)) {
-        std::cerr << "tcgetattr error\n"; return 1;
-    }
+    if (tcgetattr(fd, &tty)) { std::cerr<<"tcgetattr error\n"; return 1; }
     try {
-        speed_t speed = get_baud(cfg["baud"]);
-        cfsetispeed(&tty, speed);
-        cfsetospeed(&tty, speed);
+        speed_t sp = get_baud(cfg["baud"]);
+        cfsetispeed(&tty, sp); cfsetospeed(&tty, sp);
     } catch (...) {
-        std::cerr << "Error: invalid baud '" << cfg["baud"]
-                  << "'. See --help.\n";
-        return 1;
+        std::cerr<<"Error: invalid baud '"<<cfg["baud"]<<"'.\n"; return 1;
     }
-    // data bits
     try {
         int db = std::stoi(cfg["databits"]);
         tty.c_cflag &= ~CSIZE;
-        switch (db) {
-            case 5: tty.c_cflag |= CS5; break;
-            case 6: tty.c_cflag |= CS6; break;
-            case 7: tty.c_cflag |= CS7; break;
-            case 8: tty.c_cflag |= CS8; break;
-            default:
-                std::cerr << "Error: unsupported data-bits " << db << ".\n";
-                return 1;
-        }
+        switch(db) { case 5:tty.c_cflag|=CS5;break; case 6:tty.c_cflag|=CS6;break;\
+case 7:tty.c_cflag|=CS7;break; case 8:tty.c_cflag|=CS8;break; default:throw 0;}\
     } catch (...) {
-        std::cerr << "Error: invalid data-bits '" << cfg["databits"]
-                  << "'.\n";
-        return 1;
+        std::cerr<<"Error: invalid data-bits.\n"; return 1;
     }
-    // parity
-    char p = std::toupper(cfg["parity"][0]);
-    tty.c_cflag &= ~PARENB;
-    if (p=='E') tty.c_cflag |= PARENB;
-    else if (p=='O') tty.c_cflag |= PARENB | PARODD;
-    // stop bits
-    try {
-        int sb = std::stoi(cfg["stop"]);
-        tty.c_cflag &= ~CSTOPB;
-        if (sb == 2) tty.c_cflag |= CSTOPB;
-        else if (sb != 1) throw std::invalid_argument("");
-    } catch (...) {
-        std::cerr << "Error: invalid stop-bits '" << cfg["stop"]
-                  << "'. Must be 1 or 2.\n";
-        return 1;
-    }
-    // flow control
-    tty.c_cflag &= ~CRTSCTS;
-    tty.c_iflag &= ~(IXON|IXOFF|IXANY);
-    if (cfg["flow"] == "hardware") tty.c_cflag |= CRTSCTS;
-    else if (cfg["flow"] == "software") tty.c_iflag |= (IXON|IXOFF|IXANY);
-    else if (cfg["flow"] != "none") {
-        std::cerr << "Error: invalid flow '" << cfg["flow"]
-                  << "'. Must be none, hardware or software.\n";
-        return 1;
-    }
+    char p = std::toupper(cfg["parity"][0]); tty.c_cflag&=~PARENB;
+    if (p=='E') tty.c_cflag |= PARENB; else if (p=='O') tty.c_cflag |= PARENB|PARODD;
+    try { int sb = std::stoi(cfg["stop"]); tty.c_cflag &= ~CSTOPB; if(sb==2)tty.c_cflag|=CSTOPB; else if(sb!=1)throw 0; } catch(...) { std::cerr<<"Error: invalid stop-bits.\n"; return 1; }
+    tty.c_cflag &= ~CRTSCTS; tty.c_iflag &= ~(IXON|IXOFF|IXANY);
+    if      (cfg["flow"]=="hardware") tty.c_cflag |= CRTSCTS;
+    else if (cfg["flow"]=="software") tty.c_iflag |= (IXON|IXOFF|IXANY);
+    else if (cfg["flow"]!="none")      { std::cerr<<"Error: invalid flow.\n"; return 1;}
     tty.c_cflag |= CREAD|CLOCAL;
     tty.c_lflag &= ~(ICANON|ECHO|ECHOE|ISIG);
     tty.c_iflag &= ~(INLCR|ICRNL|IGNCR);
     tty.c_oflag &= ~OPOST;
-    if (tcsetattr(fd, TCSANOW, &tty)) {
-        std::cerr << "tcsetattr error\n";
-        return 1;
-    }
+    if (tcsetattr(fd, TCSANOW, &tty)) { std::cerr<<"tcsetattr error\n"; return 1; }
     fcntl(fd, F_SETFL, FNDELAY);
 
-    std::cout << "Connected to " << cfg["device"]
-              << ". Ctrl-C to exit.\n";
+    std::cout<<"Connected to "<<cfg["device"]<<". Ctrl-C to exit.\n";
 
-    // main I/O loop
     while (keep_running) {
-        char buf[256];
-        int n = read(fd, buf, sizeof(buf));
-        if (n > 0) {
-            std::cout << "\nRX[" << n << " bytes]: ";
-            for (int i = 0; i < n; ++i)
-                std::cout << std::hex << std::uppercase
-                          << (buf[i] & 0xFF) << " ";
-            std::cout << std::dec << "\n";
+        char buf[256]; int n = read(fd, buf, sizeof(buf));
+        if (n>0) {
+            std::cout<<"\nRX["<<n<<" bytes]: ";
+            for (int i=0;i<n;i++) std::cout<<std::hex<<std::uppercase<<(buf[i]&0xFF)<<" ";
+            std::cout<<std::dec<<"\n";
         }
         std::string line = read_input_line();
         if (!line.empty()) {
             int w = write(fd, line.c_str(), line.size());
-            std::cout << "TX[" << w << " bytes]\n";
+            std::cout<<"TX["<<w<<" bytes]\n";
         }
     }
 
     close(fd);
-    std::cout << "Disconnected.\n";
+    std::cout<<"Disconnected.\n";
     return 0;
 }
