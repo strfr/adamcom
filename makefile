@@ -2,6 +2,7 @@ PREFIX   ?= /usr/local
 BINDIR    = $(PREFIX)/bin
 CC        = g++
 CFLAGS    = -std=c++11 -Wall
+LDLIBS   += -lreadline
 SRC       = adamcom.cpp
 TARGET    = adamcom
 
@@ -10,7 +11,7 @@ TARGET    = adamcom
 all: $(TARGET)
 
 $(TARGET): $(SRC)
-	$(CC) $(CFLAGS) -o $(TARGET) $(SRC)
+	$(CC) $(CFLAGS) -o $(TARGET) $(SRC) -lreadline
 
 install: $(TARGET)
 	install -d $(DESTDIR)$(BINDIR)
