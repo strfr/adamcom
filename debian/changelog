@@ -1,3 +1,15 @@
+adamcom (1.0-4) unstable; urgency=medium
+
+  * Release 1.0-4
+
+ -- user <user@Cardinal>  Thu, 15 May 2025 09:46:38 +0300
+
+adamcom (1.0-3) unstable; urgency=medium
+
+  * Release 1.0-3
+
+ -- user <user@Cardinal>  Thu, 15 May 2025 09:33:18 +0300
+
 adamcom (1.0-2) unstable; urgency=medium
 
   * Added history support

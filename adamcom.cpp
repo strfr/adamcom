@@ -1,4 +1,4 @@
-// adamcom.cpp  –  always‑listening serial console
+// adamcom.cpp  –  always-listening serial console
 // Copyright (c) 2025 Huseyin B <aawifoa@gmail.com>
 
 #include <fcntl.h>
@@ -28,7 +28,7 @@
 static volatile bool keep_running = true;
 void sigint_handler(int) { keep_running = false; }
 
-/* ---------- küçük yardımcılar ---------- */
+/* ---------- small helpers ---------- */
 void usage(const char* prog)
 {
     std::cerr << "Usage: " << prog << " [options]\n"
@@ -39,6 +39,7 @@ void usage(const char* prog)
               << "  -s, --stop         <1|2>\n"
               << "  -f, --flow         <none|hardware|software>\n"
               << "  --hex, --normal    start mode\n"
+              << "  --crlf, --no-crlf  append CRLF to sent lines (default: yes)\n"
               << "  -h, --help\n";
 }
 
@@ -81,12 +82,43 @@ speed_t get_baud(const std::string& s)
     return it->second;
 }
 
-/* ---------- readline callback köprüsü ---------- */
+/* ---------- readline callback bridge ---------- */
 static std::function<void(char*)> g_line_handler;
 
 extern "C" void rl_trampoline(char* line)
 {
     if (g_line_handler) g_line_handler(line);
+}
+
+// Global variables for readline hooks
+static std::string* g_dynamic_prompt = nullptr;
+static std::map<std::string,std::string>* g_cfg = nullptr;
+static bool* g_append_crlf = nullptr;
+
+extern "C" int startup_hook(void) {
+    if (g_dynamic_prompt) {
+        rl_set_prompt(g_dynamic_prompt->c_str());
+    }
+    return 0;
+}
+
+extern "C" int pre_input_hook(void) {
+    if (!g_dynamic_prompt || !g_cfg || !g_append_crlf) return 0;
+
+    const char* line = rl_line_buffer;
+    if ((*g_cfg)["mode"] == "hex") {
+        std::string s;
+        for(char c: std::string(line)) if(!std::isspace(c)) s.push_back(c);
+        size_t bytes = s.size() / 2;  // Each byte is 2 hex chars
+        *g_dynamic_prompt = std::string("[") + std::to_string(bytes) + "b] > ";
+    } else {
+        size_t bytes = strlen(line);
+        if (*g_append_crlf) bytes += 2;  // Add 2 for \r\n if enabled
+        *g_dynamic_prompt = std::string("[") + std::to_string(bytes) + "b] > ";
+    }
+    rl_set_prompt(g_dynamic_prompt->c_str());
+    rl_redisplay();
+    return 0;
 }
 
 /* ---------- main ---------- */
@@ -102,7 +134,8 @@ int main(int argc,char* argv[])
         write_profile(cfg_path,{
             {"device","/dev/tnt1"},{"baud","115200"},
             {"databits","8"},{"parity","N"},{"stop","1"},
-            {"flow","none"},{"mode","normal"}
+            {"flow","none"},{"mode","normal"},
+            {"crlf","yes"}
         });
     }
     auto cfg = read_profile(cfg_path);
@@ -111,7 +144,8 @@ int main(int argc,char* argv[])
     bool fixed=false;
     std::vector<std::pair<std::string,std::string>> def = {
         {"device","/dev/tnt1"},{"baud","115200"}, {"databits","8"},
-        {"parity","N"},{"stop","1"},{"flow","none"},{"mode","normal"}
+        {"parity","N"},{"stop","1"},{"flow","none"},{"mode","normal"},
+        {"crlf","yes"}
     };
     for (auto& p:def)
         if (cfg.find(p.first)==cfg.end()) { cfg[p.first]=p.second; fixed=true; }
@@ -119,6 +153,7 @@ int main(int argc,char* argv[])
 
     /* argümanlar */
     bool changed=false;
+    bool append_crlf = (cfg["crlf"]=="yes"); // default from config
     for (int i=1;i<argc;++i) {
         std::string a = argv[i];
         auto need = [&](const char* key){
@@ -134,6 +169,8 @@ int main(int argc,char* argv[])
         else if (a=="-f"||a=="--flow")            need("flow");
         else if (a=="--hex")   { cfg["mode"]="hex";    changed=true; }
         else if (a=="--normal"){ cfg["mode"]="normal"; changed=true; }
+        else if (a=="--crlf")  { append_crlf = true; cfg["crlf"]="yes"; changed=true; }
+        else if (a=="--no-crlf") { append_crlf = false; cfg["crlf"]="no"; changed=true; }
         else { std::cerr<<"Unknown option "<<a<<"\n"; usage(argv[0]); return 1; }
     }
     if (changed) write_profile(cfg_path,cfg);
@@ -178,19 +215,46 @@ int main(int argc,char* argv[])
     tty.c_oflag &= ~OPOST;
 
     if (tcsetattr(fd,TCSANOW,&tty)){ perror("tcsetattr"); return 1; }
-    fcntl(fd,F_SETFL,FNDELAY);   // non‑blocking
+    fcntl(fd,F_SETFL,FNDELAY);   // non-blocking
 
-    std::cout<<"Connected to "<<cfg["device"]<<"  (Ctrl‑C to quit)\n";
+    std::cout<<"Connected to "<<cfg["device"]<<"  (Ctrl-C to quit)\n";
 
     /* ---------- readline callback kurulumu ---------- */
     const char* base_prompt = "> ";
-    rl_callback_handler_install(base_prompt, rl_trampoline);
+    std::string dynamic_prompt = base_prompt;
+    
+    // Set global variables for hooks
+    g_dynamic_prompt = &dynamic_prompt;
+    g_cfg = &cfg;
+    g_append_crlf = &append_crlf;
+
+    // Install readline callback
+    rl_callback_handler_install(dynamic_prompt.c_str(), rl_trampoline);
+
+    // Setup history file
+    std::string histfile = std::string(home ? home : ".") + "/.adamcom_history";
+    read_history(histfile.c_str());
+
+    // Add readline callback for prompt updates
+    rl_startup_hook = startup_hook;
+    rl_pre_input_hook = pre_input_hook;
+
+    // Force initial display update
+    rl_forced_update_display();
 
     g_line_handler = [&](char* buf)
     {
-        if (!buf) { keep_running=false; return; }         // Ctrl‑D
+        if (!buf) { keep_running=false; return; }         // Ctrl-D
         std::string line(buf); free(buf);
         if (line.empty()) return;
+
+        // Add non-empty lines to history
+        if (!line.empty()) {
+            add_history(line.c_str());
+            write_history(histfile.c_str());
+        }
+
+        printf("\r\033[K");  // Clear current line
 
         if (cfg["mode"]=="hex") {
             std::string s;
@@ -205,15 +269,29 @@ int main(int argc,char* argv[])
                 }
             }catch(...){ std::cerr<<"Invalid hex\n"; return; }
 
-            write(fd,data.data(),data.size());
-            std::cout<<"TX["<<data.size()<<" bytes]\n";
+            ssize_t w = write(fd,data.data(),data.size());
+            if (w < 0) {
+                printf("\r\nWrite error: %s\r\n", strerror(errno));
+            } else {
+                printf("\r\nTX[%zu bytes]\r\n", data.size());
+            }
         }
         else {
-            int w = write(fd,line.c_str(),line.size());
-            std::cout<<"TX["<<w<<" bytes]\n";
+            std::string to_send = line;
+            if (append_crlf) to_send += "\r\n";
+            ssize_t w = write(fd,to_send.c_str(),to_send.size());
+            if (w < 0) {
+                printf("\r\nWrite error: %s\r\n", strerror(errno));
+            } else {
+                printf("\r\nTX[%zu bytes]\r\n", line.size());
+            }
         }
-        rl_on_new_line();
-        rl_redisplay();
+        
+        // Reset prompt to base prompt and force update
+        dynamic_prompt = base_prompt;
+        rl_set_prompt(dynamic_prompt.c_str());
+        rl_replace_line("", 0);
+        rl_forced_update_display();
     };
 
     /* ---------- ana döngü ---------- */
@@ -229,21 +307,44 @@ int main(int argc,char* argv[])
             char buf[256];
             int n = read(fd,buf,sizeof(buf));
             if (n>0){
-                std::cout<<"\nRX["<<n<<" bytes]: ";
+                printf("\r\033[K\r\nRX[%d bytes]: ", n);
                 for(int i=0;i<n;++i)
-                    std::printf("0x%02X ", static_cast<uint8_t>(buf[i]));
-                std::cout<<std::dec<<"\n";
-                rl_on_new_line();
-                rl_redisplay();
+                    printf("0x%02X ", static_cast<uint8_t>(buf[i]));
+                printf("\r\n");
+                rl_set_prompt(dynamic_prompt.c_str());
+                rl_replace_line("", 0);
+                rl_forced_update_display();
             }
         }
-        if (fds[1].revents & POLLIN)            // klavye
+        if (fds[1].revents & POLLIN) {          // klavye
             rl_callback_read_char();
+            // Update prompt after each character
+            if (g_dynamic_prompt && g_cfg && g_append_crlf) {
+                const char* line = rl_line_buffer;
+                std::string new_prompt;
+                if ((*g_cfg)["mode"] == "hex") {
+                    std::string s;
+                    for(char c: std::string(line)) if(!std::isspace(c)) s.push_back(c);
+                    size_t bytes = s.size() / 2;  // Each byte is 2 hex chars
+                    new_prompt = std::string("[") + std::to_string(bytes) + "b] > ";
+                } else {
+                    size_t bytes = strlen(line);
+                    if (*g_append_crlf) bytes += 2;  // Add 2 for \r\n if enabled
+                    new_prompt = std::string("[") + std::to_string(bytes) + "b] > ";
+                }
+                *g_dynamic_prompt = new_prompt;
+                printf("\r\033[K"); // Clear the current line
+                rl_set_prompt(g_dynamic_prompt->c_str());
+                rl_replace_line(line, 0);
+                rl_forced_update_display();
+            }
+        }
     }
 
     /* temizlik */
     rl_callback_handler_remove();
     close(fd);
+    write_history(histfile.c_str());  // Program kapanırken history'i kaydet
     std::cout<<"Disconnected.\n";
     return 0;
 }
