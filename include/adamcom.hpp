@@ -37,6 +37,18 @@ struct PresetRepeatState {
 /// Global array holding repeat state for all 10 presets (index 0-9 for presets 1-10)
 extern std::array<PresetRepeatState, 10> g_preset_repeats;
 
+/// Inline (ad-hoc) repeat state - for repeating arbitrary hex data without presets
+struct InlineRepeatState {
+    bool enabled = false;
+    int interval_ms = 1000;
+    uint32_t can_id = 0x123;
+    std::vector<uint8_t> data;
+    std::chrono::steady_clock::time_point next_fire;
+};
+
+/// Global inline repeat state
+extern InlineRepeatState g_inline_repeat;
+
 // ============================================================================
 // Configuration I/O
 // ============================================================================

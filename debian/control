@@ -9,8 +9,8 @@ Homepage: https://example.com/adamcom
 Package: adamcom
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: Simple serial-port terminal application
- “adamcom” is a lightweight C++ program that allows users to send and
- receive arbitrary byte streams over a serial interface. It supports
- configurable baud rate, data bits, parity, stop bits, and flow control,
- and works with both virtual (tty0tty) and physical serial ports.
+Description: Serial and CAN bus terminal with presets and repeat mode
+ ADAMCOM is a minicom-like terminal for Serial and CAN bus communication.
+ Features: 10 persistent presets, multi-preset repeat mode with independent
+ intervals, inline repeat for ad-hoc CAN messages, hex/text modes,
+ interactive settings menu, and non-interrupting RX/TX output.

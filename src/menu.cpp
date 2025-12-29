@@ -17,6 +17,9 @@ namespace adamcom {
 // Define the global preset repeats array
 std::array<PresetRepeatState, 10> g_preset_repeats{};
 
+// Define the global inline repeat state
+InlineRepeatState g_inline_repeat{};
+
 void clear_screen()
 {
     std::printf("\033[2J\033[H");
@@ -155,30 +158,85 @@ void show_presets_menu(Config& cfg, InterfaceType itype)
         clear_screen();
         std::printf("\n");
         std::printf("┌─────────────────────────────────────────────┐\n");
+        std::printf("│           Preset %-2d Options                 │\n", idx);
+        std::printf("├─────────────────────────────────────────────┤\n");
+        std::printf("│ Current values:                             │\n");
+        std::printf("│   Name: %-35s │\n", cfg[key_name].c_str());
+        std::printf("│   Format: %-33s │\n", cfg[key_fmt].c_str());
+        if (itype == InterfaceType::CAN) {
+            std::printf("│   CAN ID: %-33s │\n", cfg[key_canid].c_str());
+        }
+        std::printf("│   Data: %-35s │\n", cfg[key_data].c_str());
+        std::printf("├─────────────────────────────────────────────┤\n");
+        std::printf("│ E) Edit    D) Delete/Clear    Q) Back       │\n");
+        std::printf("└─────────────────────────────────────────────┘\n");
+        std::printf("\nChoice: ");
+        std::fflush(stdout);
+
+        char action;
+        if (std::scanf(" %c", &action) != 1) continue;
+        flush_stdin();
+
+        if (action == 'q' || action == 'Q') continue;
+
+        if (action == 'd' || action == 'D') {
+            // Delete/Clear preset
+            cfg[key_name] = "Preset " + pi;
+            cfg[key_fmt] = "hex";
+            cfg[key_data] = "";
+            cfg[key_canid] = "0x123";
+            std::printf("\n✓ Preset %d cleared to defaults.\n", idx);
+            sleep(1);
+            continue;
+        }
+
+        if (action != 'e' && action != 'E') continue;
+
+        // Edit mode
+        clear_screen();
+        std::printf("\n");
+        std::printf("┌─────────────────────────────────────────────┐\n");
         std::printf("│           Editing Preset %-2d                 │\n", idx);
+        std::printf("│  (Press Enter to keep current, - to clear)  │\n");
         std::printf("└─────────────────────────────────────────────┘\n\n");
 
         std::printf("Name [%s]: ", cfg[key_name].c_str());
         std::fflush(stdout);
         std::string line = read_line();
-        if (!line.empty()) cfg[key_name] = line;
+        if (line == "-") {
+            cfg[key_name] = "Preset " + pi;
+        } else if (!line.empty()) {
+            cfg[key_name] = line;
+        }
 
         std::printf("Format (hex/text) [%s]: ", cfg[key_fmt].c_str());
         std::fflush(stdout);
         line = read_line();
-        if (!line.empty()) cfg[key_fmt] = line;
+        if (line == "-") {
+            cfg[key_fmt] = "hex";
+        } else if (!line.empty()) {
+            cfg[key_fmt] = line;
+        }
 
         if (itype == InterfaceType::CAN) {
             std::printf("CAN ID (hex, e.g. 0x123) [%s]: ", cfg[key_canid].c_str());
             std::fflush(stdout);
             line = read_line();
-            if (!line.empty()) cfg[key_canid] = line;
+            if (line == "-") {
+                cfg[key_canid] = "0x123";
+            } else if (!line.empty()) {
+                cfg[key_canid] = line;
+            }
         }
 
         std::printf("Data (%s) [%s]: ", cfg[key_fmt].c_str(), cfg[key_data].c_str());
         std::fflush(stdout);
         line = read_line();
-        if (!line.empty()) cfg[key_data] = line;
+        if (line == "-") {
+            cfg[key_data] = "";
+        } else if (!line.empty()) {
+            cfg[key_data] = line;
+        }
 
         std::printf("\n✓ Preset %d updated.\n", idx);
         sleep(1);

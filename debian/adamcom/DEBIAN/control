@@ -1,14 +1,14 @@
 Package: adamcom
-Version: 1.1-1
+Version: 1.2-1
 Architecture: amd64
 Maintainer: Huseyin B <aawifoa@gmail.com>
-Installed-Size: 148
+Installed-Size: 160
 Depends: libc6 (>= 2.38), libgcc-s1 (>= 3.0), libreadline8t64 (>= 6.0), libstdc++6 (>= 13.1)
 Section: utils
 Priority: optional
 Homepage: https://example.com/adamcom
-Description: Simple serial-port terminal application
- “adamcom” is a lightweight C++ program that allows users to send and
- receive arbitrary byte streams over a serial interface. It supports
- configurable baud rate, data bits, parity, stop bits, and flow control,
- and works with both virtual (tty0tty) and physical serial ports.
+Description: Serial and CAN bus terminal with presets and repeat mode
+ ADAMCOM is a minicom-like terminal for Serial and CAN bus communication.
+ Features: 10 persistent presets, multi-preset repeat mode with independent
+ intervals, inline repeat for ad-hoc CAN messages, hex/text modes,
+ interactive settings menu, and non-interrupting RX/TX output.

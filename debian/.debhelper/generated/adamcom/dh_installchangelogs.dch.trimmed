@@ -1,3 +1,18 @@
+adamcom (1.2-1) unstable; urgency=medium
+
+  * Release 1.2
+  * Added inline repeat mode for CAN hex mode (e.g., FF FF -id 0x03 -r -t 100)
+  * Inline flags: -id <CAN_ID>, -r (repeat), -t <interval_ms>
+  * /rs stop to stop inline repeat, /ra stops all repeats
+  * Fixed byte counter to exclude inline flags from count
+  * First message now sent immediately when starting repeat
+  * Warning when using inline flags in non-hex mode
+  * Added Alt+1-9,0 keyboard shortcuts for presets 1-10
+  * Improved preset editor with Edit/Delete options
+  * Use - to clear individual fields during edit
+
+ -- user <user@Cardinal>  Mon, 29 Dec 2025 18:00:00 +0300
+
 adamcom (1.1-1) unstable; urgency=medium
 
   * Major release 1.1

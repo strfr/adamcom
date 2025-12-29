@@ -40,6 +40,8 @@ static std::function<void(char*)> g_line_handler;
 static std::string* g_dynamic_prompt = nullptr;
 static Config* g_cfg = nullptr;
 static bool* g_append_crlf = nullptr;
+static int* g_fd = nullptr;
+static InterfaceType* g_itype = nullptr;
 
 // ============================================================================
 // Signal Handlers
@@ -53,6 +55,10 @@ extern "C" void sigint_handler(int)
 // ============================================================================
 // Readline Callbacks
 // ============================================================================
+
+// Forward declaration for helper function used in pre_input_hook
+static std::string to_lower(std::string s);
+static std::string extract_hex_bytes_only(const std::string& line);
 
 extern "C" void rl_trampoline(char* line)
 {
@@ -79,10 +85,12 @@ extern "C" int pre_input_hook()
     std::string new_prompt;
 
     if ((*g_cfg)["mode"] == "hex") {
+        // Extract only hex bytes, excluding flags like -id, -r, -t
+        std::string hex_only = extract_hex_bytes_only(line);
         std::string hex;
-        for (const char* p = line; *p; ++p) {
-            if (!std::isspace(static_cast<unsigned char>(*p))) {
-                hex.push_back(*p);
+        for (char c : hex_only) {
+            if (!std::isspace(static_cast<unsigned char>(c))) {
+                hex.push_back(c);
             }
         }
         size_t bytes = hex.size() / 2;
@@ -104,6 +112,33 @@ extern "C" int ctrl_t_handler(int, int)
     g_show_menu = 1;
     return 0;
 }
+
+// Alt+1-9,0 handlers for presets 1-10
+static int alt_preset_handler(int preset_num)
+{
+    if (!g_fd || !g_cfg || !g_itype || !g_append_crlf) {
+        return 0;
+    }
+    
+    bool ok = send_preset(*g_fd, *g_cfg, *g_itype, preset_num, *g_append_crlf);
+    std::string pname = (*g_cfg)["preset" + std::to_string(preset_num) + "_name"];
+    std::string msg = ok ? 
+        ("TX[Preset " + std::to_string(preset_num) + " (" + pname + ")]") :
+        ("TX FAILED[Preset " + std::to_string(preset_num) + "]");
+    print_message_above(msg);
+    return 0;
+}
+
+extern "C" int alt_1_handler(int, int) { return alt_preset_handler(1); }
+extern "C" int alt_2_handler(int, int) { return alt_preset_handler(2); }
+extern "C" int alt_3_handler(int, int) { return alt_preset_handler(3); }
+extern "C" int alt_4_handler(int, int) { return alt_preset_handler(4); }
+extern "C" int alt_5_handler(int, int) { return alt_preset_handler(5); }
+extern "C" int alt_6_handler(int, int) { return alt_preset_handler(6); }
+extern "C" int alt_7_handler(int, int) { return alt_preset_handler(7); }
+extern "C" int alt_8_handler(int, int) { return alt_preset_handler(8); }
+extern "C" int alt_9_handler(int, int) { return alt_preset_handler(9); }
+extern "C" int alt_0_handler(int, int) { return alt_preset_handler(10); }
 
 // ============================================================================
 // Helper Functions
@@ -133,6 +168,47 @@ static std::string to_lower(std::string s)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
     return s;
+}
+
+/// Extract only the hex bytes portion from input, excluding flags like -id, -r, -t
+/// and slash commands like /help, /rs, etc.
+static std::string extract_hex_bytes_only(const std::string& line)
+{
+    // If it starts with /, it's a command - return empty
+    if (!line.empty() && line[0] == '/') {
+        return "";
+    }
+    
+    std::istringstream iss(line);
+    std::string token;
+    std::string result;
+    bool skip_next = false;
+    
+    while (iss >> token) {
+        if (skip_next) {
+            skip_next = false;
+            continue;
+        }
+        
+        std::string lower_tok = to_lower(token);
+        
+        // Check if it's a flag that takes an argument
+        if (lower_tok == "-id" || lower_tok == "-t") {
+            skip_next = true;  // Skip the next token (the argument)
+            continue;
+        }
+        
+        // Check if it's a standalone flag
+        if (lower_tok == "-r") {
+            continue;
+        }
+        
+        // Otherwise it's hex data
+        if (!result.empty()) result += " ";
+        result += token;
+    }
+    
+    return result;
 }
 
 static void update_prompt_display(const std::string& prompt)
@@ -504,12 +580,27 @@ int main(int argc, char* argv[])
     g_dynamic_prompt = &dynamic_prompt;
     g_cfg = &cfg;
     g_append_crlf = &append_crlf;
+    g_fd = &fd;
+    g_itype = &itype;
 
     rl_callback_handler_install(dynamic_prompt.c_str(), rl_trampoline);
     read_history(hist_path.c_str());
     rl_startup_hook = startup_hook;
     rl_pre_input_hook = pre_input_hook;
     rl_bind_key(20, ctrl_t_handler);  // Ctrl-T
+    
+    // Bind Alt+1-9,0 for presets (Meta key = ESC prefix in readline)
+    rl_bind_keyseq("\0331", alt_1_handler);
+    rl_bind_keyseq("\0332", alt_2_handler);
+    rl_bind_keyseq("\0333", alt_3_handler);
+    rl_bind_keyseq("\0334", alt_4_handler);
+    rl_bind_keyseq("\0335", alt_5_handler);
+    rl_bind_keyseq("\0336", alt_6_handler);
+    rl_bind_keyseq("\0337", alt_7_handler);
+    rl_bind_keyseq("\0338", alt_8_handler);
+    rl_bind_keyseq("\0339", alt_9_handler);
+    rl_bind_keyseq("\0330", alt_0_handler);
+    
     rl_forced_update_display();
 
     // Line handler callback
@@ -541,8 +632,9 @@ int main(int argc, char* argv[])
                     "  /p N -r           Start repeating preset N (default 1000ms)\n"
                     "  /p N -r -t MS     Start repeating preset N with MS interval\n"
                     "  /p N -nr          Stop repeating preset N\n"
-                    "  /rs               Show repeat status for all presets\n"
-                    "  /ra               Stop all repeating presets\n"
+                    "  /rs               Show repeat status for all repeats\n"
+                    "  /rs stop          Stop inline repeat\n"
+                    "  /ra               Stop all repeats (presets + inline)\n"
                     "  /hex XX XX        Send raw hex bytes\n"
                     "  /can ID XX XX     Send CAN frame (ID + data)\n"
                     "  /clear            Clear screen\n"
@@ -552,7 +644,14 @@ int main(int argc, char* argv[])
                     "  /crlf on|off      Toggle CRLF append\n"
                     "  /status           Show current settings\n"
                     "  /menu             Open settings menu\n"
-                    "  /help             Show this help\n\n");
+                    "  /help             Show this help\n"
+                    "\n"
+                    "Inline Repeat (CAN hex mode):\n"
+                    "  XX XX XX -id 0xNNN        Send hex to specific CAN ID\n"
+                    "  XX XX XX -r               Repeat at 1000ms (default ID)\n"
+                    "  XX XX XX -id 0xNNN -r     Repeat to specific CAN ID\n"
+                    "  XX XX XX -r -t MS         Repeat at MS interval\n"
+                    "  XX XX -id 0xNN -r -t 100  Full example: repeat every 100ms\n\n");
             }
             else if (cmd == "menu") {
                 g_show_menu = 1;
@@ -571,6 +670,20 @@ int main(int argc, char* argv[])
                 std::printf("  Mode: %s, CRLF: %s\n", cfg["mode"].c_str(), append_crlf ? "on" : "off");
                 // Show active repeats
                 bool any_repeat = false;
+                
+                // Show inline repeat
+                if (g_inline_repeat.enabled) {
+                    if (!any_repeat) {
+                        std::printf("  Repeating:\n");
+                        any_repeat = true;
+                    }
+                    std::printf("    Inline: ID 0x%03X, %zu bytes, every %dms\n",
+                                g_inline_repeat.can_id,
+                                g_inline_repeat.data.size(),
+                                g_inline_repeat.interval_ms);
+                }
+                
+                // Show preset repeats
                 for (int i = 0; i < 10; ++i) {
                     if (g_preset_repeats[static_cast<size_t>(i)].enabled) {
                         if (!any_repeat) {
@@ -584,28 +697,51 @@ int main(int argc, char* argv[])
                 std::printf("\n");
             }
             else if (cmd == "rs") {
-                // Repeat status
-                std::printf("\r\nRepeat Status:\n");
-                bool any = false;
-                for (int i = 0; i < 10; ++i) {
-                    if (g_preset_repeats[static_cast<size_t>(i)].enabled) {
-                        std::string pname = cfg["preset" + std::to_string(i+1) + "_name"];
-                        std::printf("  Preset %d (%s): every %dms\n", i + 1, pname.c_str(),
-                                    g_preset_repeats[static_cast<size_t>(i)].interval_ms);
+                // Repeat status or stop inline repeat
+                if (!arg.empty() && to_lower(arg) == "stop") {
+                    // /rs stop - stop inline repeat
+                    if (g_inline_repeat.enabled) {
+                        g_inline_repeat.enabled = false;
+                        std::printf("\r\nInline repeat stopped.\n");
+                    } else {
+                        std::printf("\r\nNo inline repeat is active.\n");
+                    }
+                } else {
+                    // /rs - show repeat status
+                    std::printf("\r\nRepeat Status:\n");
+                    bool any = false;
+                    
+                    // Show inline repeat
+                    if (g_inline_repeat.enabled) {
+                        std::printf("  Inline: ID 0x%03X, %zu bytes, every %dms\n",
+                                    g_inline_repeat.can_id,
+                                    g_inline_repeat.data.size(),
+                                    g_inline_repeat.interval_ms);
                         any = true;
                     }
+                    
+                    // Show preset repeats
+                    for (int i = 0; i < 10; ++i) {
+                        if (g_preset_repeats[static_cast<size_t>(i)].enabled) {
+                            std::string pname = cfg["preset" + std::to_string(i+1) + "_name"];
+                            std::printf("  Preset %d (%s): every %dms\n", i + 1, pname.c_str(),
+                                        g_preset_repeats[static_cast<size_t>(i)].interval_ms);
+                            any = true;
+                        }
+                    }
+                    if (!any) {
+                        std::printf("  No repeats are active.\n");
+                    }
+                    std::printf("  Use /rs stop to stop inline repeat, /ra to stop all.\n\n");
                 }
-                if (!any) {
-                    std::printf("  No presets are repeating.\n");
-                }
-                std::printf("\n");
             }
             else if (cmd == "ra") {
-                // Stop all repeats
+                // Stop all repeats (including inline)
+                g_inline_repeat.enabled = false;
                 for (int i = 0; i < 10; ++i) {
                     g_preset_repeats[static_cast<size_t>(i)].enabled = false;
                 }
-                std::printf("\r\nAll repeating presets stopped.\n");
+                std::printf("\r\nAll repeats stopped.\n");
             }
             else if (cmd == "p") {
                 // Parse: /p N | /p N -r | /p N -r -t MS | /p N -nr
@@ -765,19 +901,75 @@ int main(int argc, char* argv[])
             return;
         }
 
+        // Parse inline flags: -id 0xXXX, -r, -t MS
+        // Format: "FF FF FF FF -id 0x03 -r -t 100"
+        std::string hex_part;
+        uint32_t inline_can_id = 0;
+        bool has_inline_id = false;
+        bool start_inline_repeat = false;
+        int inline_interval_ms = 1000;
+        
+        {
+            std::istringstream iss(line);
+            std::string token;
+            std::vector<std::string> hex_tokens;
+            
+            while (iss >> token) {
+                std::string lower_tok = to_lower(token);
+                if (lower_tok == "-id") {
+                    if (iss >> token) {
+                        try {
+                            inline_can_id = std::stoul(token, nullptr, 16);
+                            has_inline_id = true;
+                        } catch (...) {
+                            std::cerr << "Invalid CAN ID format\n";
+                            update_prompt_display(dynamic_prompt);
+                            return;
+                        }
+                    }
+                } else if (lower_tok == "-r") {
+                    start_inline_repeat = true;
+                } else if (lower_tok == "-t") {
+                    if (iss >> token) {
+                        try {
+                            inline_interval_ms = std::stoi(token);
+                        } catch (...) {
+                            std::cerr << "Invalid interval format\n";
+                            update_prompt_display(dynamic_prompt);
+                            return;
+                        }
+                    }
+                } else {
+                    // Not a flag, treat as hex data
+                    hex_tokens.push_back(token);
+                }
+            }
+            
+            // Rebuild hex string from hex tokens
+            for (size_t i = 0; i < hex_tokens.size(); ++i) {
+                if (i > 0) hex_part += " ";
+                hex_part += hex_tokens[i];
+            }
+        }
+
         // Send data
         if (itype == InterfaceType::CAN) {
             struct can_frame frame{};
 
-            try {
-                frame.can_id = std::stoul(cfg["can_id"], nullptr, 16);
-            } catch (...) {
-                frame.can_id = 0x123;
+            // Use inline ID if provided, otherwise use config
+            if (has_inline_id) {
+                frame.can_id = inline_can_id;
+            } else {
+                try {
+                    frame.can_id = std::stoul(cfg["can_id"], nullptr, 16);
+                } catch (...) {
+                    frame.can_id = 0x123;
+                }
             }
 
             if (cfg["mode"] == "hex") {
                 std::vector<uint8_t> data;
-                if (!parse_hex_bytes(line, data)) {
+                if (!parse_hex_bytes(hex_part, data)) {
                     std::cerr << "Invalid hex format\n";
                     update_prompt_display(dynamic_prompt);
                     return;
@@ -787,19 +979,55 @@ int main(int argc, char* argv[])
                     update_prompt_display(dynamic_prompt);
                     return;
                 }
-                frame.can_dlc = static_cast<uint8_t>(data.size());
-                std::memcpy(frame.data, data.data(), data.size());
+                
+                // Handle inline repeat
+                if (start_inline_repeat) {
+                    g_inline_repeat.enabled = true;
+                    g_inline_repeat.can_id = frame.can_id;
+                    g_inline_repeat.data = data;
+                    g_inline_repeat.interval_ms = inline_interval_ms;
+                    g_inline_repeat.next_fire = Clock::now() + 
+                        std::chrono::milliseconds(inline_interval_ms);
+                    
+                    // Send first message immediately
+                    frame.can_dlc = static_cast<uint8_t>(data.size());
+                    std::memcpy(frame.data, data.data(), data.size());
+                    ssize_t w = write(fd, &frame, sizeof(frame));
+                    if (w < 0) {
+                        std::printf("\r\nWrite error: %s\n", std::strerror(errno));
+                    } else {
+                        std::printf("\r\nInline repeat started: ID 0x%03X, %zu bytes, every %dms\n",
+                                    frame.can_id, data.size(), inline_interval_ms);
+                        std::printf("Use /rs stop to stop, /ra to stop all.\n");
+                    }
+                } else {
+                    // Send once
+                    frame.can_dlc = static_cast<uint8_t>(data.size());
+                    std::memcpy(frame.data, data.data(), data.size());
+                    
+                    ssize_t w = write(fd, &frame, sizeof(frame));
+                    if (w < 0) {
+                        std::printf("\r\nWrite error: %s\n", std::strerror(errno));
+                    } else {
+                        std::printf("\r\nTX[ID:0x%03X DLC:%d]\n", frame.can_id, frame.can_dlc);
+                    }
+                }
             } else {
+                // Normal mode - warn if inline flags were used
+                if (start_inline_repeat || has_inline_id) {
+                    std::printf("\r\nNote: Inline flags (-r, -id, -t) only work in hex mode.\n");
+                    std::printf("Use /mode hex to switch to hex mode.\n");
+                }
                 if (line.size() > 8) line = line.substr(0, 8);
                 frame.can_dlc = static_cast<uint8_t>(line.size());
                 std::memcpy(frame.data, line.c_str(), line.size());
-            }
 
             ssize_t w = write(fd, &frame, sizeof(frame));
             if (w < 0) {
                 std::printf("\r\nWrite error: %s\n", std::strerror(errno));
             } else {
                 std::printf("\r\nTX[ID:0x%03X DLC:%d]\n", frame.can_id, frame.can_dlc);
+            }
             }
         } else {
             // Serial mode
@@ -885,6 +1113,19 @@ int main(int argc, char* argv[])
         // Calculate poll timeout based on soonest repeat
         int timeout_ms = 100;
         auto now = Clock::now();
+        
+        // Check inline repeat timeout
+        if (g_inline_repeat.enabled) {
+            auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(
+                g_inline_repeat.next_fire - now).count();
+            if (diff <= 0) {
+                timeout_ms = 0;
+            } else {
+                timeout_ms = static_cast<int>(std::min<long long>(timeout_ms, diff));
+            }
+        }
+        
+        // Check preset repeat timeouts
         for (size_t i = 0; i < 10; ++i) {
             if (g_preset_repeats[i].enabled) {
                 auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -911,8 +1152,20 @@ int main(int argc, char* argv[])
             break;
         }
 
-        // Handle multi-preset repeat transmissions
+        // Handle inline repeat transmission
         now = Clock::now();
+        if (g_inline_repeat.enabled && now >= g_inline_repeat.next_fire) {
+            bool ok = send_can_bytes(fd, g_inline_repeat.can_id, g_inline_repeat.data);
+            char hex_buf[64];
+            std::snprintf(hex_buf, sizeof(hex_buf), "TX[Inline ID:0x%03X DLC:%zu]%s",
+                          g_inline_repeat.can_id, g_inline_repeat.data.size(),
+                          ok ? "" : " FAILED");
+            print_message_above(hex_buf);
+            g_inline_repeat.next_fire = now + 
+                std::chrono::milliseconds(g_inline_repeat.interval_ms);
+        }
+
+        // Handle multi-preset repeat transmissions
         for (size_t i = 0; i < 10; ++i) {
             if (g_preset_repeats[i].enabled && now >= g_preset_repeats[i].next_fire) {
                 int preset_num = static_cast<int>(i + 1);
@@ -968,10 +1221,12 @@ int main(int argc, char* argv[])
                 std::string new_prompt;
 
                 if ((*g_cfg)["mode"] == "hex") {
+                    // Extract only hex bytes, excluding flags like -id, -r, -t
+                    std::string hex_only = extract_hex_bytes_only(line);
                     std::string hex;
-                    for (const char* p = line; *p; ++p) {
-                        if (!std::isspace(static_cast<unsigned char>(*p))) {
-                            hex.push_back(*p);
+                    for (char c : hex_only) {
+                        if (!std::isspace(static_cast<unsigned char>(c))) {
+                            hex.push_back(c);
                         }
                     }
                     size_t bytes = hex.size() / 2;

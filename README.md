@@ -44,8 +44,9 @@ adamcom -c can0 --canbitrate 500000
 | `/p N -r` | Start repeating preset N (default 1000ms) |
 | `/p N -r -t MS` | Start repeating preset N with MS interval |
 | `/p N -nr` | Stop repeating preset N |
-| `/rs` | Show repeat status for all presets |
-| `/ra` | Stop ALL repeating presets |
+| `/rs` | Show repeat status for all repeats |
+| `/rs stop` | Stop inline repeat |
+| `/ra` | Stop ALL repeats (presets + inline) |
 | `/hex XX XX` | Send raw hex bytes |
 | `/can ID XX XX` | Send CAN frame (ID in hex, up to 8 data bytes) |
 | `/clear` | Clear screen |
@@ -68,6 +69,20 @@ Send multiple presets simultaneously with independent intervals:
 /p 1 -nr          # Stop preset 1 only
 /ra               # Stop all repeating presets
 ```
+
+## Inline Repeat Mode (CAN Hex)
+
+In hex mode (`/mode hex`), send arbitrary data with inline flags:
+
+```
+FF FF FF FF FF FF FF FC -id 0x03           # Send to specific CAN ID
+AA BB CC DD -r                              # Repeat every 1000ms (default)
+AA BB CC DD -id 0x123 -r -t 100            # Repeat to ID 0x123 every 100ms
+/rs stop                                    # Stop inline repeat
+/ra                                         # Stop all repeats
+```
+
+Flags can appear anywhere in the line; only hex bytes are sent.
 
 ## Configuration
 
