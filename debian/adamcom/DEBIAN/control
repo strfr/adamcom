@@ -1,8 +1,8 @@
 Package: adamcom
-Version: 1.0-4
+Version: 1.1-1
 Architecture: amd64
 Maintainer: Huseyin B <aawifoa@gmail.com>
-Installed-Size: 96
+Installed-Size: 148
 Depends: libc6 (>= 2.38), libgcc-s1 (>= 3.0), libreadline8t64 (>= 6.0), libstdc++6 (>= 13.1)
 Section: utils
 Priority: optional

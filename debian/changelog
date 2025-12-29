@@ -1,3 +1,18 @@
+adamcom (1.1-1) unstable; urgency=medium
+
+  * Major release 1.1
+  * Added multi-preset repeat mode (/p N -r -t MS)
+  * Added simultaneous preset repeating with independent intervals
+  * Added /rs (repeat status) and /ra (stop all) commands
+  * Added non-interrupting RX/TX output (typing stays static)
+  * Added comprehensive manual (H in Ctrl-T menu)
+  * Added command hints to settings menu
+  * Added /hex, /can, /clear, /device, /baud, /mode, /crlf, /status commands
+  * Updated install.sh with better UX and fallback to source build
+  * Improved README.md documentation
+
+ -- user <user@Cardinal>  Sun, 29 Dec 2025 12:00:00 +0300
+
 adamcom (1.0-4) unstable; urgency=medium
 
   * Release 1.0-4
@@ -16,4 +31,5 @@ adamcom (1.0-2) unstable; urgency=medium
   * Added arrow keys support
   * Device Parameter setting now reacts -D
   * Added Byte count support
+
  -- Huseyin B <aawifoa@gmail.com>  Wed, 13 May 2025 16:30:00 +0300
