@@ -1,14 +1,18 @@
 adamcom (1.2-1) unstable; urgency=medium
 
   * Release 1.2
-  * Added inline repeat mode for all modes (CAN/Serial, Hex/Text)
-  * Inline flags: -id <CAN_ID>, -r (repeat), -t <interval_ms>
+  * BREAKING: Text mode no longer parses inline flags - use /rpt MS text
+  * Added /rpt MS text command for text mode repeat
+  * Strict input validation in hex mode (only 0-9, A-F allowed)
+  * Malformed flags (e.g., ----r) now rejected with clear error
+  * Hex mode inline flags: -id <CAN_ID>, -r (repeat), -t <interval_ms>
   * /rs stop to stop inline repeat, /ra stops all repeats
-  * Fixed byte counter to exclude inline flags in all modes
-  * First message now sent immediately when starting repeat
+  * Fixed byte counter: text mode counts all chars, hex mode excludes flags
+  * First message sent immediately when starting repeat
   * Added Alt+1-9,0 keyboard shortcuts for presets 1-10
   * Improved preset editor with Edit/Delete options
   * Use - to clear individual fields during edit
+  * Updated manual with text/hex mode differences
 
  -- user <user@Cardinal>  Mon, 29 Dec 2025 18:00:00 +0300
 

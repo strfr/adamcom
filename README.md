@@ -49,6 +49,7 @@ adamcom -c can0 --canbitrate 500000
 | `/ra` | Stop ALL repeats (presets + inline) |
 | `/hex XX XX` | Send raw hex bytes |
 | `/can ID XX XX` | Send CAN frame (ID in hex, up to 8 data bytes) |
+| `/rpt MS text` | Repeat text every MS milliseconds (for text mode) |
 | `/clear` | Clear screen |
 | `/device PATH` | Switch serial device |
 | `/baud RATE` | Change baud rate |
@@ -72,24 +73,43 @@ Send multiple presets simultaneously with independent intervals:
 
 ## Inline Repeat Mode
 
-Send arbitrary data with inline flags (works in all modes):
+### HEX Mode (flags parsed from input)
+
+In HEX mode, add flags to input line for repeat. Strict validation ensures only valid hex:
 
 ```
-# Hex mode examples:
 FF FF FF FF -r                    # Repeat every 1000ms (default)
 AA BB CC DD -r -t 100             # Repeat every 100ms
 AA BB CC DD -id 0x123 -r          # CAN: Repeat to specific ID
-
-# Text mode examples:
-hello world -r -t 500             # Repeat text every 500ms
-ATZ -r -t 1000                    # Repeat AT command every second
 
 # Control:
 /rs stop                          # Stop inline repeat
 /ra                               # Stop all repeats
 ```
 
-Flags (`-r`, `-t`, `-id`) can appear anywhere; only data is sent.
+Valid flags: `-r` (repeat), `-t MS` (interval), `-id 0xNNN` (CAN ID)
+
+### TEXT Mode (use /rpt command)
+
+In TEXT mode, **all text is sent as-is** (no flag parsing). Use `/rpt` for repeat:
+
+```
+# Text repeat examples:
+/rpt 500 hello world              # Repeat 'hello world' every 500ms
+/rpt 100 -r test                  # Sends literal '-r test' every 100ms
+/rpt 1000 ATZ                     # Repeat AT command every second
+
+# Control:
+/rs stop                          # Stop text repeat
+```
+
+This design allows sending any text including `-r`, `-t`, etc. without conflicts.
+
+## Strict Input Validation
+
+- **HEX mode**: Only valid hex characters (0-9, A-F, a-f). Invalid input rejected.
+- **TEXT mode**: Any text accepted, sent exactly as typed.
+- **Flags**: Only exact matches (`-r`, `-t`, `-id`). Malformed flags rejected.
 
 ## Configuration
 

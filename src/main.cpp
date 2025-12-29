@@ -56,9 +56,9 @@ extern "C" void sigint_handler(int)
 // Readline Callbacks
 // ============================================================================
 
-// Forward declaration for helper function used in pre_input_hook
+// Forward declarations for helper functions used in pre_input_hook
 static std::string to_lower(std::string s);
-static std::string extract_hex_bytes_only(const std::string& line);
+static std::string extract_hex_bytes_only(const std::string& line, std::string* error = nullptr);
 
 extern "C" void rl_trampoline(char* line)
 {
@@ -84,10 +84,9 @@ extern "C" int pre_input_hook()
     const char* line = rl_line_buffer;
     std::string new_prompt;
 
-    // Extract only data portion, excluding flags like -id, -r, -t
-    std::string data_only = extract_hex_bytes_only(line);
-
     if ((*g_cfg)["mode"] == "hex") {
+        // HEX mode: Extract only hex data portion, excluding flags
+        std::string data_only = extract_hex_bytes_only(line);
         std::string hex;
         for (char c : data_only) {
             if (!std::isspace(static_cast<unsigned char>(c))) {
@@ -97,7 +96,8 @@ extern "C" int pre_input_hook()
         size_t bytes = hex.size() / 2;
         new_prompt = "[" + std::to_string(bytes) + "b] > ";
     } else {
-        size_t bytes = data_only.size();
+        // TEXT mode: Count all characters (no flag stripping)
+        size_t bytes = std::strlen(line);
         if (*g_append_crlf) bytes += 2;
         new_prompt = "[" + std::to_string(bytes) + "b] > ";
     }
@@ -171,9 +171,54 @@ static std::string to_lower(std::string s)
     return s;
 }
 
-/// Extract only the hex bytes portion from input, excluding flags like -id, -r, -t
-/// and slash commands like /help, /rs, etc.
-static std::string extract_hex_bytes_only(const std::string& line)
+/// Check if a string is a valid hex token (only 0-9, A-F, a-f)
+static bool is_valid_hex_token(const std::string& token)
+{
+    if (token.empty()) return false;
+    for (char c : token) {
+        if (!std::isxdigit(static_cast<unsigned char>(c))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Check if a token is a valid flag: exactly "-r", "-t", or "-id" (case insensitive)
+static bool is_valid_flag(const std::string& token, const std::string& expected)
+{
+    if (token.size() != expected.size()) return false;
+    return to_lower(token) == expected;
+}
+
+/// Check if a token is a valid CAN ID (0x prefix + hex digits)
+static bool is_valid_can_id_token(const std::string& token)
+{
+    if (token.size() < 3) return false;
+    if (token[0] != '0' || (token[1] != 'x' && token[1] != 'X')) return false;
+    for (size_t i = 2; i < token.size(); ++i) {
+        if (!std::isxdigit(static_cast<unsigned char>(token[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Check if a token is a valid positive integer
+static bool is_valid_positive_int(const std::string& token)
+{
+    if (token.empty()) return false;
+    for (char c : token) {
+        if (!std::isdigit(static_cast<unsigned char>(c))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Extract only the hex bytes portion from input (HEX MODE ONLY)
+/// Excludes flags like -id, -r, -t and validates them strictly
+/// Returns empty string and sets error message if invalid input found
+static std::string extract_hex_bytes_only(const std::string& line, std::string* error)
 {
     // If it starts with /, it's a command - return empty
     if (!line.empty() && line[0] == '/') {
@@ -184,27 +229,54 @@ static std::string extract_hex_bytes_only(const std::string& line)
     std::string token;
     std::string result;
     bool skip_next = false;
+    std::string skip_reason;
     
     while (iss >> token) {
         if (skip_next) {
+            // Validate the argument based on what we're expecting
+            if (skip_reason == "-id") {
+                if (!is_valid_can_id_token(token)) {
+                    if (error) *error = "Invalid CAN ID format: " + token + " (expected 0xNNN)";
+                    return "";
+                }
+            } else if (skip_reason == "-t") {
+                if (!is_valid_positive_int(token)) {
+                    if (error) *error = "Invalid interval: " + token + " (expected positive integer)";
+                    return "";
+                }
+            }
             skip_next = false;
+            skip_reason.clear();
             continue;
         }
         
         std::string lower_tok = to_lower(token);
         
-        // Check if it's a flag that takes an argument
-        if (lower_tok == "-id" || lower_tok == "-t") {
-            skip_next = true;  // Skip the next token (the argument)
+        // Check if it's a valid flag that takes an argument
+        if (is_valid_flag(token, "-id") || is_valid_flag(token, "-t")) {
+            skip_next = true;
+            skip_reason = lower_tok;
             continue;
         }
         
-        // Check if it's a standalone flag
-        if (lower_tok == "-r") {
+        // Check if it's a valid standalone flag
+        if (is_valid_flag(token, "-r")) {
             continue;
         }
         
-        // Otherwise it's hex data
+        // Check if it looks like a malformed flag (starts with -)
+        if (!token.empty() && token[0] == '-') {
+            if (error) *error = "Invalid flag: " + token + " (valid flags: -r, -t MS, -id 0xNNN)";
+            return "";
+        }
+        
+        // Must be hex data - validate it
+        if (!is_valid_hex_token(token)) {
+            if (error) *error = "Invalid hex: " + token + " (only 0-9, A-F allowed)";
+            return "";
+        }
+        
+        // Valid hex token
         if (!result.empty()) result += " ";
         result += token;
     }
@@ -647,14 +719,15 @@ int main(int argc, char* argv[])
                     "  /menu             Open settings menu\n"
                     "  /help             Show this help\n"
                     "\n"
-                    "Inline Repeat (all modes):\n"
-                    "  <data> -r               Repeat at 1000ms\n"
-                    "  <data> -r -t MS         Repeat at MS interval\n"
-                    "  <data> -id 0xNNN -r     CAN: repeat to specific ID\n"
-                    "  Examples:\n"
-                    "    FF FF FF -r -t 100    Hex mode: repeat every 100ms\n"
-                    "    hello -r -t 500       Text mode: repeat every 500ms\n"
-                    "    AA BB -id 0x03 -r     CAN: repeat to ID 0x03\n\n");
+                    "Text Mode Repeat (use /rpt to avoid conflict with text):\n"
+                    "  /rpt MS text          Repeat 'text' every MS milliseconds\n"
+                    "  /rpt 500 hello        Example: repeat 'hello' every 500ms\n"
+                    "  /rpt 100 -r test      Send literal '-r test' every 100ms\n"
+                    "\n"
+                    "Hex Mode Inline Repeat (flags parsed from input):\n"
+                    "  FF FF FF -r           Repeat at 1000ms\n"
+                    "  FF FF FF -r -t 100    Repeat at 100ms interval\n"
+                    "  AA BB -id 0x03 -r     CAN: repeat to ID 0x03\n\n");
             }
             else if (cmd == "menu") {
                 g_show_menu = 1;
@@ -912,13 +985,101 @@ int main(int argc, char* argv[])
                 write_profile(cfg_path, cfg);
                 std::printf("\r\nCRLF is now %s\n", append_crlf ? "ON" : "OFF");
             }
+            else if (cmd == "rpt") {
+                // /rpt MS text - repeat text every MS milliseconds
+                // This is the proper way to repeat in text mode
+                if (arg.empty()) {
+                    std::printf("\r\nUsage: /rpt MS text\n");
+                    std::printf("  Example: /rpt 500 hello world\n");
+                    std::printf("  Example: /rpt 100 -r test  (sends literal '-r test')\n");
+                    update_prompt_display(dynamic_prompt);
+                    return;
+                }
+                
+                auto parts = split_first(arg);
+                std::string ms_str = parts.first;
+                std::string text = parts.second;
+                
+                if (!is_valid_positive_int(ms_str)) {
+                    std::printf("\r\nError: First argument must be interval in milliseconds.\n");
+                    std::printf("Usage: /rpt MS text\n");
+                    update_prompt_display(dynamic_prompt);
+                    return;
+                }
+                
+                if (text.empty()) {
+                    std::printf("\r\nError: No text to repeat.\n");
+                    std::printf("Usage: /rpt MS text\n");
+                    update_prompt_display(dynamic_prompt);
+                    return;
+                }
+                
+                int interval_ms = std::stoi(ms_str);
+                if (interval_ms < 10) {
+                    std::printf("\r\nError: Interval must be at least 10ms.\n");
+                    update_prompt_display(dynamic_prompt);
+                    return;
+                }
+                
+                // Setup inline repeat for text mode
+                g_inline_repeat.enabled = true;
+                g_inline_repeat.is_can = (itype == InterfaceType::CAN);
+                g_inline_repeat.is_hex = false;
+                g_inline_repeat.text_data = text;
+                g_inline_repeat.append_crlf = append_crlf;
+                g_inline_repeat.interval_ms = interval_ms;
+                g_inline_repeat.next_fire = Clock::now() + 
+                    std::chrono::milliseconds(interval_ms);
+                
+                if (itype == InterfaceType::CAN) {
+                    try {
+                        g_inline_repeat.can_id = std::stoul(cfg["can_id"], nullptr, 16);
+                    } catch (...) {
+                        g_inline_repeat.can_id = 0x123;
+                    }
+                    
+                    // CAN text - max 8 chars
+                    if (text.size() > 8) text = text.substr(0, 8);
+                    g_inline_repeat.text_data = text;
+                    
+                    // Send first message immediately
+                    struct can_frame frame{};
+                    frame.can_id = g_inline_repeat.can_id;
+                    frame.can_dlc = static_cast<uint8_t>(text.size());
+                    std::memcpy(frame.data, text.c_str(), text.size());
+                    ssize_t w = write(fd, &frame, sizeof(frame));
+                    if (w < 0) {
+                        std::printf("\r\nWrite error: %s\n", std::strerror(errno));
+                        g_inline_repeat.enabled = false;
+                    } else {
+                        std::printf("\r\nText repeat started: ID 0x%03X, \"%s\", every %dms\n",
+                                    g_inline_repeat.can_id, text.c_str(), interval_ms);
+                        std::printf("Use /rs stop to stop, /ra to stop all.\n");
+                    }
+                } else {
+                    // Serial text - send first message immediately
+                    std::string msg = text;
+                    if (append_crlf) msg += "\r\n";
+                    ssize_t w = write(fd, msg.c_str(), msg.size());
+                    if (w < 0) {
+                        std::printf("\r\nWrite error: %s\n", std::strerror(errno));
+                        g_inline_repeat.enabled = false;
+                    } else {
+                        std::printf("\r\nText repeat started: \"%s\", every %dms\n",
+                                    text.c_str(), interval_ms);
+                        std::printf("Use /rs stop to stop, /ra to stop all.\n");
+                    }
+                }
+            }
             else if (cmd == "r") {
                 std::string a = to_lower(arg);
                 std::printf("\r\nNote: Use /p N -r to start repeat, /p N -nr to stop.\n");
+                std::printf("      For text repeat, use: /rpt MS text\n");
                 std::printf("      Use /rs for status, /ra to stop all.\n");
             }
             else if (cmd == "ri" || cmd == "rp") {
                 std::printf("\r\nNote: Use /p N -r -t MS for interval, /rs for status.\n");
+                std::printf("      For text repeat, use: /rpt MS text\n");
             }
             else {
                 std::printf("\r\nUnknown command. Type /help\n");
@@ -928,62 +1089,174 @@ int main(int argc, char* argv[])
             return;
         }
 
-        // Parse inline flags: -id 0xXXX, -r, -t MS
-        // Format: "FF FF FF FF -id 0x03 -r -t 100"
+        // =================================================================
+        // TEXT MODE: Send raw text, no flag parsing
+        // Use /rpt MS text for text repeat
+        // =================================================================
+        if (cfg["mode"] != "hex") {
+            std::string text = line;  // Send exactly what user typed
+            
+            if (itype == InterfaceType::CAN) {
+                // CAN text mode - max 8 chars
+                if (text.size() > 8) {
+                    std::printf("\r\nWarning: CAN data truncated to 8 bytes.\n");
+                    text = text.substr(0, 8);
+                }
+                
+                struct can_frame frame{};
+                try {
+                    frame.can_id = std::stoul(cfg["can_id"], nullptr, 16);
+                } catch (...) {
+                    frame.can_id = 0x123;
+                }
+                
+                frame.can_dlc = static_cast<uint8_t>(text.size());
+                std::memcpy(frame.data, text.c_str(), text.size());
+                
+                ssize_t w = write(fd, &frame, sizeof(frame));
+                if (w < 0) {
+                    std::printf("\r\nWrite error: %s\n", std::strerror(errno));
+                } else {
+                    std::printf("\r\nTX[ID:0x%03X DLC:%d]\n", frame.can_id, frame.can_dlc);
+                }
+            } else {
+                // Serial text mode
+                std::string msg = text;
+                if (append_crlf) msg += "\r\n";
+                ssize_t w = write(fd, msg.c_str(), msg.size());
+                if (w < 0) {
+                    std::printf("\r\nWrite error: %s\n", std::strerror(errno));
+                } else {
+                    std::printf("\r\nTX[%zu bytes]\n", text.size());
+                }
+            }
+            
+            update_prompt_display("> ");
+            return;
+        }
+
+        // =================================================================
+        // HEX MODE: Parse inline flags with strict validation
+        // Format: "FF FF FF -id 0x03 -r -t 100"
+        // =================================================================
         std::string hex_part;
         uint32_t inline_can_id = 0;
         bool has_inline_id = false;
         bool start_inline_repeat = false;
         int inline_interval_ms = 1000;
+        std::string parse_error;
         
         {
             std::istringstream iss(line);
             std::string token;
             std::vector<std::string> hex_tokens;
+            bool skip_next = false;
+            std::string skip_reason;
             
             while (iss >> token) {
-                std::string lower_tok = to_lower(token);
-                if (lower_tok == "-id") {
-                    if (iss >> token) {
+                if (skip_next) {
+                    // Validate argument based on what we're expecting
+                    if (skip_reason == "-id") {
+                        if (!is_valid_can_id_token(token)) {
+                            parse_error = "Invalid CAN ID: " + token + " (expected 0xNNN)";
+                            break;
+                        }
                         try {
                             inline_can_id = std::stoul(token, nullptr, 16);
                             has_inline_id = true;
                         } catch (...) {
-                            std::cerr << "Invalid CAN ID format\n";
-                            update_prompt_display(dynamic_prompt);
-                            return;
+                            parse_error = "Invalid CAN ID: " + token;
+                            break;
+                        }
+                    } else if (skip_reason == "-t") {
+                        if (!is_valid_positive_int(token)) {
+                            parse_error = "Invalid interval: " + token + " (expected positive integer)";
+                            break;
+                        }
+                        inline_interval_ms = std::stoi(token);
+                        if (inline_interval_ms < 10) {
+                            parse_error = "Interval must be at least 10ms";
+                            break;
                         }
                     }
-                } else if (lower_tok == "-r") {
-                    start_inline_repeat = true;
-                } else if (lower_tok == "-t") {
-                    if (iss >> token) {
-                        try {
-                            inline_interval_ms = std::stoi(token);
-                        } catch (...) {
-                            std::cerr << "Invalid interval format\n";
-                            update_prompt_display(dynamic_prompt);
-                            return;
-                        }
-                    }
-                } else {
-                    // Not a flag, treat as hex data
-                    hex_tokens.push_back(token);
+                    skip_next = false;
+                    skip_reason.clear();
+                    continue;
                 }
+                
+                // Check for valid flags (exact match only)
+                if (is_valid_flag(token, "-id")) {
+                    skip_next = true;
+                    skip_reason = "-id";
+                    continue;
+                }
+                if (is_valid_flag(token, "-t")) {
+                    skip_next = true;
+                    skip_reason = "-t";
+                    continue;
+                }
+                if (is_valid_flag(token, "-r")) {
+                    start_inline_repeat = true;
+                    continue;
+                }
+                
+                // Check if it looks like a malformed flag (starts with -)
+                if (!token.empty() && token[0] == '-') {
+                    parse_error = "Invalid flag: " + token + " (valid: -r, -t MS, -id 0xNNN)";
+                    break;
+                }
+                
+                // Must be hex data - validate strictly
+                if (!is_valid_hex_token(token)) {
+                    parse_error = "Invalid hex byte: " + token + " (only 0-9, A-F allowed)";
+                    break;
+                }
+                
+                hex_tokens.push_back(token);
             }
             
-            // Rebuild hex string from hex tokens
+            // Check for missing argument
+            if (skip_next && parse_error.empty()) {
+                parse_error = "Missing argument for " + skip_reason;
+            }
+            
+            // Rebuild hex string from valid hex tokens
             for (size_t i = 0; i < hex_tokens.size(); ++i) {
                 if (i > 0) hex_part += " ";
                 hex_part += hex_tokens[i];
             }
         }
+        
+        // Handle parse error
+        if (!parse_error.empty()) {
+            std::printf("\r\nError: %s\n", parse_error.c_str());
+            update_prompt_display(dynamic_prompt);
+            return;
+        }
 
-        // Send data
+        // Parse and validate hex data
+        std::vector<uint8_t> data;
+        if (!hex_part.empty() && !parse_hex_bytes(hex_part, data)) {
+            std::printf("\r\nError: Invalid hex format\n");
+            update_prompt_display(dynamic_prompt);
+            return;
+        }
+        
+        if (data.empty()) {
+            std::printf("\r\nError: No data to send\n");
+            update_prompt_display(dynamic_prompt);
+            return;
+        }
+
+        // Send data (HEX mode)
         if (itype == InterfaceType::CAN) {
+            if (data.size() > 8) {
+                std::printf("\r\nError: CAN data max 8 bytes (got %zu)\n", data.size());
+                update_prompt_display(dynamic_prompt);
+                return;
+            }
+            
             struct can_frame frame{};
-
-            // Use inline ID if provided, otherwise use config
             if (has_inline_id) {
                 frame.can_id = inline_can_id;
             } else {
@@ -993,162 +1266,69 @@ int main(int argc, char* argv[])
                     frame.can_id = 0x123;
                 }
             }
-
-            if (cfg["mode"] == "hex") {
-                std::vector<uint8_t> data;
-                if (!parse_hex_bytes(hex_part, data)) {
-                    std::cerr << "Invalid hex format\n";
-                    update_prompt_display(dynamic_prompt);
-                    return;
-                }
-                if (data.size() > 8) {
-                    std::cerr << "CAN data max 8 bytes\n";
-                    update_prompt_display(dynamic_prompt);
-                    return;
-                }
+            
+            // Handle inline repeat
+            if (start_inline_repeat) {
+                g_inline_repeat.enabled = true;
+                g_inline_repeat.is_can = true;
+                g_inline_repeat.is_hex = true;
+                g_inline_repeat.can_id = frame.can_id;
+                g_inline_repeat.data = data;
+                g_inline_repeat.interval_ms = inline_interval_ms;
+                g_inline_repeat.next_fire = Clock::now() + 
+                    std::chrono::milliseconds(inline_interval_ms);
                 
-                // Handle inline repeat
-                if (start_inline_repeat) {
-                    g_inline_repeat.enabled = true;
-                    g_inline_repeat.is_can = true;
-                    g_inline_repeat.is_hex = true;
-                    g_inline_repeat.can_id = frame.can_id;
-                    g_inline_repeat.data = data;
-                    g_inline_repeat.interval_ms = inline_interval_ms;
-                    g_inline_repeat.next_fire = Clock::now() + 
-                        std::chrono::milliseconds(inline_interval_ms);
-                    
-                    // Send first message immediately
-                    frame.can_dlc = static_cast<uint8_t>(data.size());
-                    std::memcpy(frame.data, data.data(), data.size());
-                    ssize_t w = write(fd, &frame, sizeof(frame));
-                    if (w < 0) {
-                        std::printf("\r\nWrite error: %s\n", std::strerror(errno));
-                    } else {
-                        std::printf("\r\nInline repeat started: ID 0x%03X, %zu bytes, every %dms\n",
-                                    frame.can_id, data.size(), inline_interval_ms);
-                        std::printf("Use /rs stop to stop, /ra to stop all.\n");
-                    }
+                // Send first message immediately
+                frame.can_dlc = static_cast<uint8_t>(data.size());
+                std::memcpy(frame.data, data.data(), data.size());
+                ssize_t w = write(fd, &frame, sizeof(frame));
+                if (w < 0) {
+                    std::printf("\r\nWrite error: %s\n", std::strerror(errno));
+                    g_inline_repeat.enabled = false;
                 } else {
-                    // Send once
-                    frame.can_dlc = static_cast<uint8_t>(data.size());
-                    std::memcpy(frame.data, data.data(), data.size());
-                    
-                    ssize_t w = write(fd, &frame, sizeof(frame));
-                    if (w < 0) {
-                        std::printf("\r\nWrite error: %s\n", std::strerror(errno));
-                    } else {
-                        std::printf("\r\nTX[ID:0x%03X DLC:%d]\n", frame.can_id, frame.can_dlc);
-                    }
+                    std::printf("\r\nInline repeat started: ID 0x%03X, %zu bytes, every %dms\n",
+                                frame.can_id, data.size(), inline_interval_ms);
+                    std::printf("Use /rs stop to stop, /ra to stop all.\n");
                 }
             } else {
-                // CAN Text mode - also support inline repeat
-                std::string text_part = hex_part;  // In text mode, hex_part contains the text
-                if (text_part.size() > 8) text_part = text_part.substr(0, 8);
+                // Send once
+                frame.can_dlc = static_cast<uint8_t>(data.size());
+                std::memcpy(frame.data, data.data(), data.size());
                 
-                if (start_inline_repeat) {
-                    g_inline_repeat.enabled = true;
-                    g_inline_repeat.is_can = true;
-                    g_inline_repeat.is_hex = false;
-                    g_inline_repeat.can_id = frame.can_id;
-                    g_inline_repeat.text_data = text_part;
-                    g_inline_repeat.interval_ms = inline_interval_ms;
-                    g_inline_repeat.next_fire = Clock::now() + 
-                        std::chrono::milliseconds(inline_interval_ms);
-                    
-                    // Send first message immediately
-                    frame.can_dlc = static_cast<uint8_t>(text_part.size());
-                    std::memcpy(frame.data, text_part.c_str(), text_part.size());
-                    ssize_t w = write(fd, &frame, sizeof(frame));
-                    if (w < 0) {
-                        std::printf("\r\nWrite error: %s\n", std::strerror(errno));
-                    } else {
-                        std::printf("\r\nInline repeat started: ID 0x%03X, %zu bytes, every %dms\n",
-                                    frame.can_id, text_part.size(), inline_interval_ms);
-                        std::printf("Use /rs stop to stop, /ra to stop all.\n");
-                    }
+                ssize_t w = write(fd, &frame, sizeof(frame));
+                if (w < 0) {
+                    std::printf("\r\nWrite error: %s\n", std::strerror(errno));
                 } else {
-                    frame.can_dlc = static_cast<uint8_t>(text_part.size());
-                    std::memcpy(frame.data, text_part.c_str(), text_part.size());
-
-                    ssize_t w = write(fd, &frame, sizeof(frame));
-                    if (w < 0) {
-                        std::printf("\r\nWrite error: %s\n", std::strerror(errno));
-                    } else {
-                        std::printf("\r\nTX[ID:0x%03X DLC:%d]\n", frame.can_id, frame.can_dlc);
-                    }
+                    std::printf("\r\nTX[ID:0x%03X DLC:%d]\n", frame.can_id, frame.can_dlc);
                 }
             }
         } else {
-            // Serial mode
-            if (cfg["mode"] == "hex") {
-                std::vector<uint8_t> data;
-                if (!parse_hex_bytes(hex_part, data)) {
-                    std::cerr << "Invalid hex format\n";
-                    update_prompt_display(dynamic_prompt);
-                    return;
-                }
+            // Serial HEX mode
+            if (start_inline_repeat) {
+                g_inline_repeat.enabled = true;
+                g_inline_repeat.is_can = false;
+                g_inline_repeat.is_hex = true;
+                g_inline_repeat.data = data;
+                g_inline_repeat.interval_ms = inline_interval_ms;
+                g_inline_repeat.next_fire = Clock::now() + 
+                    std::chrono::milliseconds(inline_interval_ms);
                 
-                if (start_inline_repeat) {
-                    g_inline_repeat.enabled = true;
-                    g_inline_repeat.is_can = false;
-                    g_inline_repeat.is_hex = true;
-                    g_inline_repeat.data = data;
-                    g_inline_repeat.interval_ms = inline_interval_ms;
-                    g_inline_repeat.next_fire = Clock::now() + 
-                        std::chrono::milliseconds(inline_interval_ms);
-                    
-                    // Send first message immediately
-                    ssize_t w = write(fd, data.data(), data.size());
-                    if (w < 0) {
-                        std::printf("\r\nWrite error: %s\n", std::strerror(errno));
-                    } else {
-                        std::printf("\r\nInline repeat started: %zu bytes, every %dms\n",
-                                    data.size(), inline_interval_ms);
-                        std::printf("Use /rs stop to stop, /ra to stop all.\n");
-                    }
+                // Send first message immediately
+                ssize_t w = write(fd, data.data(), data.size());
+                if (w < 0) {
+                    std::printf("\r\nWrite error: %s\n", std::strerror(errno));
+                    g_inline_repeat.enabled = false;
                 } else {
-                    ssize_t w = write(fd, data.data(), data.size());
-                    if (w < 0) {
-                        std::printf("\r\nWrite error: %s\n", std::strerror(errno));
-                    } else {
-                        std::printf("\r\nTX[%zu bytes]\n", data.size());
-                    }
+                    std::printf("\r\nInline repeat started: %zu bytes, every %dms\n",
+                                data.size(), inline_interval_ms);
+                    std::printf("Use /rs stop to stop, /ra to stop all.\n");
                 }
             } else {
-                // Serial text mode
-                std::string text_part = hex_part;  // In text mode, hex_part contains the text
-                
-                if (start_inline_repeat) {
-                    g_inline_repeat.enabled = true;
-                    g_inline_repeat.is_can = false;
-                    g_inline_repeat.is_hex = false;
-                    g_inline_repeat.text_data = text_part;
-                    g_inline_repeat.append_crlf = append_crlf;
-                    g_inline_repeat.interval_ms = inline_interval_ms;
-                    g_inline_repeat.next_fire = Clock::now() + 
-                        std::chrono::milliseconds(inline_interval_ms);
-                    
-                    // Send first message immediately
-                    std::string msg = text_part;
-                    if (append_crlf) msg += "\r\n";
-                    ssize_t w = write(fd, msg.c_str(), msg.size());
-                    if (w < 0) {
-                        std::printf("\r\nWrite error: %s\n", std::strerror(errno));
-                    } else {
-                        std::printf("\r\nInline repeat started: \"%s\", every %dms\n",
-                                    text_part.c_str(), inline_interval_ms);
-                        std::printf("Use /rs stop to stop, /ra to stop all.\n");
-                    }
+                ssize_t w = write(fd, data.data(), data.size());
+                if (w < 0) {
+                    std::printf("\r\nWrite error: %s\n", std::strerror(errno));
                 } else {
-                    std::string msg = text_part;
-                    if (append_crlf) msg += "\r\n";
-                    ssize_t w = write(fd, msg.c_str(), msg.size());
-                    if (w < 0) {
-                        std::printf("\r\nWrite error: %s\n", std::strerror(errno));
-                    } else {
-                        std::printf("\r\nTX[%zu bytes]\n", text_part.size());
-                    }
+                    std::printf("\r\nTX[%zu bytes]\n", data.size());
                 }
             }
         }
@@ -1360,10 +1540,9 @@ int main(int argc, char* argv[])
                 const char* line = rl_line_buffer;
                 std::string new_prompt;
 
-                // Extract only data portion, excluding flags like -id, -r, -t
-                std::string data_only = extract_hex_bytes_only(line);
-
                 if ((*g_cfg)["mode"] == "hex") {
+                    // HEX mode: Extract only hex data, excluding flags
+                    std::string data_only = extract_hex_bytes_only(line);
                     std::string hex;
                     for (char c : data_only) {
                         if (!std::isspace(static_cast<unsigned char>(c))) {
@@ -1373,7 +1552,8 @@ int main(int argc, char* argv[])
                     size_t bytes = hex.size() / 2;
                     new_prompt = "[" + std::to_string(bytes) + "b] > ";
                 } else {
-                    size_t bytes = data_only.size();
+                    // TEXT mode: Count all characters (no flag stripping)
+                    size_t bytes = std::strlen(line);
                     if (*g_append_crlf) bytes += 2;
                     new_prompt = "[" + std::to_string(bytes) + "b] > ";
                 }
