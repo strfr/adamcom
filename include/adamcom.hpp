@@ -37,12 +37,16 @@ struct PresetRepeatState {
 /// Global array holding repeat state for all 10 presets (index 0-9 for presets 1-10)
 extern std::array<PresetRepeatState, 10> g_preset_repeats;
 
-/// Inline (ad-hoc) repeat state - for repeating arbitrary hex data without presets
+/// Inline (ad-hoc) repeat state - for repeating arbitrary data without presets
 struct InlineRepeatState {
     bool enabled = false;
     int interval_ms = 1000;
-    uint32_t can_id = 0x123;
-    std::vector<uint8_t> data;
+    bool is_can = false;           // true = CAN mode, false = Serial mode
+    bool is_hex = true;            // true = hex data, false = text data
+    uint32_t can_id = 0x123;       // CAN ID (only used in CAN mode)
+    std::vector<uint8_t> data;     // Binary data (for hex mode)
+    std::string text_data;         // Text data (for text mode)
+    bool append_crlf = false;      // Append CRLF (for serial text mode)
     std::chrono::steady_clock::time_point next_fire;
 };
 

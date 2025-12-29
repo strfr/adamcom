@@ -10,4 +10,4 @@ Depends: adamcom (= 1.2-1)
 Section: debug
 Priority: optional
 Description: debug symbols for adamcom
-Build-Ids: fb5e4bf913e2239b35060662ab1e81cbe7a21fcb
+Build-Ids: 2e5ce1787f8092c047c2c45cec190fd0716f7220

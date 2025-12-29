@@ -1,12 +1,11 @@
 adamcom (1.2-1) unstable; urgency=medium
 
   * Release 1.2
-  * Added inline repeat mode for CAN hex mode (e.g., FF FF -id 0x03 -r -t 100)
+  * Added inline repeat mode for all modes (CAN/Serial, Hex/Text)
   * Inline flags: -id <CAN_ID>, -r (repeat), -t <interval_ms>
   * /rs stop to stop inline repeat, /ra stops all repeats
-  * Fixed byte counter to exclude inline flags from count
+  * Fixed byte counter to exclude inline flags in all modes
   * First message now sent immediately when starting repeat
-  * Warning when using inline flags in non-hex mode
   * Added Alt+1-9,0 keyboard shortcuts for presets 1-10
   * Improved preset editor with Edit/Delete options
   * Use - to clear individual fields during edit

@@ -84,11 +84,12 @@ extern "C" int pre_input_hook()
     const char* line = rl_line_buffer;
     std::string new_prompt;
 
+    // Extract only data portion, excluding flags like -id, -r, -t
+    std::string data_only = extract_hex_bytes_only(line);
+
     if ((*g_cfg)["mode"] == "hex") {
-        // Extract only hex bytes, excluding flags like -id, -r, -t
-        std::string hex_only = extract_hex_bytes_only(line);
         std::string hex;
-        for (char c : hex_only) {
+        for (char c : data_only) {
             if (!std::isspace(static_cast<unsigned char>(c))) {
                 hex.push_back(c);
             }
@@ -96,7 +97,7 @@ extern "C" int pre_input_hook()
         size_t bytes = hex.size() / 2;
         new_prompt = "[" + std::to_string(bytes) + "b] > ";
     } else {
-        size_t bytes = std::strlen(line);
+        size_t bytes = data_only.size();
         if (*g_append_crlf) bytes += 2;
         new_prompt = "[" + std::to_string(bytes) + "b] > ";
     }
@@ -646,12 +647,14 @@ int main(int argc, char* argv[])
                     "  /menu             Open settings menu\n"
                     "  /help             Show this help\n"
                     "\n"
-                    "Inline Repeat (CAN hex mode):\n"
-                    "  XX XX XX -id 0xNNN        Send hex to specific CAN ID\n"
-                    "  XX XX XX -r               Repeat at 1000ms (default ID)\n"
-                    "  XX XX XX -id 0xNNN -r     Repeat to specific CAN ID\n"
-                    "  XX XX XX -r -t MS         Repeat at MS interval\n"
-                    "  XX XX -id 0xNN -r -t 100  Full example: repeat every 100ms\n\n");
+                    "Inline Repeat (all modes):\n"
+                    "  <data> -r               Repeat at 1000ms\n"
+                    "  <data> -r -t MS         Repeat at MS interval\n"
+                    "  <data> -id 0xNNN -r     CAN: repeat to specific ID\n"
+                    "  Examples:\n"
+                    "    FF FF FF -r -t 100    Hex mode: repeat every 100ms\n"
+                    "    hello -r -t 500       Text mode: repeat every 500ms\n"
+                    "    AA BB -id 0x03 -r     CAN: repeat to ID 0x03\n\n");
             }
             else if (cmd == "menu") {
                 g_show_menu = 1;
@@ -677,10 +680,15 @@ int main(int argc, char* argv[])
                         std::printf("  Repeating:\n");
                         any_repeat = true;
                     }
-                    std::printf("    Inline: ID 0x%03X, %zu bytes, every %dms\n",
-                                g_inline_repeat.can_id,
-                                g_inline_repeat.data.size(),
-                                g_inline_repeat.interval_ms);
+                    if (g_inline_repeat.is_hex) {
+                        std::printf("    Inline: %zu bytes, every %dms\n",
+                                    g_inline_repeat.data.size(),
+                                    g_inline_repeat.interval_ms);
+                    } else {
+                        std::printf("    Inline: \"%s\", every %dms\n",
+                                    g_inline_repeat.text_data.c_str(),
+                                    g_inline_repeat.interval_ms);
+                    }
                 }
                 
                 // Show preset repeats
@@ -713,10 +721,29 @@ int main(int argc, char* argv[])
                     
                     // Show inline repeat
                     if (g_inline_repeat.enabled) {
-                        std::printf("  Inline: ID 0x%03X, %zu bytes, every %dms\n",
-                                    g_inline_repeat.can_id,
-                                    g_inline_repeat.data.size(),
-                                    g_inline_repeat.interval_ms);
+                        if (g_inline_repeat.is_can) {
+                            if (g_inline_repeat.is_hex) {
+                                std::printf("  Inline: CAN ID 0x%03X, %zu bytes, every %dms\n",
+                                            g_inline_repeat.can_id,
+                                            g_inline_repeat.data.size(),
+                                            g_inline_repeat.interval_ms);
+                            } else {
+                                std::printf("  Inline: CAN ID 0x%03X, \"%s\", every %dms\n",
+                                            g_inline_repeat.can_id,
+                                            g_inline_repeat.text_data.c_str(),
+                                            g_inline_repeat.interval_ms);
+                            }
+                        } else {
+                            if (g_inline_repeat.is_hex) {
+                                std::printf("  Inline: Serial, %zu bytes, every %dms\n",
+                                            g_inline_repeat.data.size(),
+                                            g_inline_repeat.interval_ms);
+                            } else {
+                                std::printf("  Inline: Serial, \"%s\", every %dms\n",
+                                            g_inline_repeat.text_data.c_str(),
+                                            g_inline_repeat.interval_ms);
+                            }
+                        }
                         any = true;
                     }
                     
@@ -983,6 +1010,8 @@ int main(int argc, char* argv[])
                 // Handle inline repeat
                 if (start_inline_repeat) {
                     g_inline_repeat.enabled = true;
+                    g_inline_repeat.is_can = true;
+                    g_inline_repeat.is_hex = true;
                     g_inline_repeat.can_id = frame.can_id;
                     g_inline_repeat.data = data;
                     g_inline_repeat.interval_ms = inline_interval_ms;
@@ -1013,45 +1042,113 @@ int main(int argc, char* argv[])
                     }
                 }
             } else {
-                // Normal mode - warn if inline flags were used
-                if (start_inline_repeat || has_inline_id) {
-                    std::printf("\r\nNote: Inline flags (-r, -id, -t) only work in hex mode.\n");
-                    std::printf("Use /mode hex to switch to hex mode.\n");
-                }
-                if (line.size() > 8) line = line.substr(0, 8);
-                frame.can_dlc = static_cast<uint8_t>(line.size());
-                std::memcpy(frame.data, line.c_str(), line.size());
+                // CAN Text mode - also support inline repeat
+                std::string text_part = hex_part;  // In text mode, hex_part contains the text
+                if (text_part.size() > 8) text_part = text_part.substr(0, 8);
+                
+                if (start_inline_repeat) {
+                    g_inline_repeat.enabled = true;
+                    g_inline_repeat.is_can = true;
+                    g_inline_repeat.is_hex = false;
+                    g_inline_repeat.can_id = frame.can_id;
+                    g_inline_repeat.text_data = text_part;
+                    g_inline_repeat.interval_ms = inline_interval_ms;
+                    g_inline_repeat.next_fire = Clock::now() + 
+                        std::chrono::milliseconds(inline_interval_ms);
+                    
+                    // Send first message immediately
+                    frame.can_dlc = static_cast<uint8_t>(text_part.size());
+                    std::memcpy(frame.data, text_part.c_str(), text_part.size());
+                    ssize_t w = write(fd, &frame, sizeof(frame));
+                    if (w < 0) {
+                        std::printf("\r\nWrite error: %s\n", std::strerror(errno));
+                    } else {
+                        std::printf("\r\nInline repeat started: ID 0x%03X, %zu bytes, every %dms\n",
+                                    frame.can_id, text_part.size(), inline_interval_ms);
+                        std::printf("Use /rs stop to stop, /ra to stop all.\n");
+                    }
+                } else {
+                    frame.can_dlc = static_cast<uint8_t>(text_part.size());
+                    std::memcpy(frame.data, text_part.c_str(), text_part.size());
 
-            ssize_t w = write(fd, &frame, sizeof(frame));
-            if (w < 0) {
-                std::printf("\r\nWrite error: %s\n", std::strerror(errno));
-            } else {
-                std::printf("\r\nTX[ID:0x%03X DLC:%d]\n", frame.can_id, frame.can_dlc);
-            }
+                    ssize_t w = write(fd, &frame, sizeof(frame));
+                    if (w < 0) {
+                        std::printf("\r\nWrite error: %s\n", std::strerror(errno));
+                    } else {
+                        std::printf("\r\nTX[ID:0x%03X DLC:%d]\n", frame.can_id, frame.can_dlc);
+                    }
+                }
             }
         } else {
             // Serial mode
             if (cfg["mode"] == "hex") {
                 std::vector<uint8_t> data;
-                if (!parse_hex_bytes(line, data)) {
+                if (!parse_hex_bytes(hex_part, data)) {
                     std::cerr << "Invalid hex format\n";
                     update_prompt_display(dynamic_prompt);
                     return;
                 }
-                ssize_t w = write(fd, data.data(), data.size());
-                if (w < 0) {
-                    std::printf("\r\nWrite error: %s\n", std::strerror(errno));
+                
+                if (start_inline_repeat) {
+                    g_inline_repeat.enabled = true;
+                    g_inline_repeat.is_can = false;
+                    g_inline_repeat.is_hex = true;
+                    g_inline_repeat.data = data;
+                    g_inline_repeat.interval_ms = inline_interval_ms;
+                    g_inline_repeat.next_fire = Clock::now() + 
+                        std::chrono::milliseconds(inline_interval_ms);
+                    
+                    // Send first message immediately
+                    ssize_t w = write(fd, data.data(), data.size());
+                    if (w < 0) {
+                        std::printf("\r\nWrite error: %s\n", std::strerror(errno));
+                    } else {
+                        std::printf("\r\nInline repeat started: %zu bytes, every %dms\n",
+                                    data.size(), inline_interval_ms);
+                        std::printf("Use /rs stop to stop, /ra to stop all.\n");
+                    }
                 } else {
-                    std::printf("\r\nTX[%zu bytes]\n", data.size());
+                    ssize_t w = write(fd, data.data(), data.size());
+                    if (w < 0) {
+                        std::printf("\r\nWrite error: %s\n", std::strerror(errno));
+                    } else {
+                        std::printf("\r\nTX[%zu bytes]\n", data.size());
+                    }
                 }
             } else {
-                std::string msg = line;
-                if (append_crlf) msg += "\r\n";
-                ssize_t w = write(fd, msg.c_str(), msg.size());
-                if (w < 0) {
-                    std::printf("\r\nWrite error: %s\n", std::strerror(errno));
+                // Serial text mode
+                std::string text_part = hex_part;  // In text mode, hex_part contains the text
+                
+                if (start_inline_repeat) {
+                    g_inline_repeat.enabled = true;
+                    g_inline_repeat.is_can = false;
+                    g_inline_repeat.is_hex = false;
+                    g_inline_repeat.text_data = text_part;
+                    g_inline_repeat.append_crlf = append_crlf;
+                    g_inline_repeat.interval_ms = inline_interval_ms;
+                    g_inline_repeat.next_fire = Clock::now() + 
+                        std::chrono::milliseconds(inline_interval_ms);
+                    
+                    // Send first message immediately
+                    std::string msg = text_part;
+                    if (append_crlf) msg += "\r\n";
+                    ssize_t w = write(fd, msg.c_str(), msg.size());
+                    if (w < 0) {
+                        std::printf("\r\nWrite error: %s\n", std::strerror(errno));
+                    } else {
+                        std::printf("\r\nInline repeat started: \"%s\", every %dms\n",
+                                    text_part.c_str(), inline_interval_ms);
+                        std::printf("Use /rs stop to stop, /ra to stop all.\n");
+                    }
                 } else {
-                    std::printf("\r\nTX[%zu bytes]\n", line.size());
+                    std::string msg = text_part;
+                    if (append_crlf) msg += "\r\n";
+                    ssize_t w = write(fd, msg.c_str(), msg.size());
+                    if (w < 0) {
+                        std::printf("\r\nWrite error: %s\n", std::strerror(errno));
+                    } else {
+                        std::printf("\r\nTX[%zu bytes]\n", text_part.size());
+                    }
                 }
             }
         }
@@ -1155,12 +1252,55 @@ int main(int argc, char* argv[])
         // Handle inline repeat transmission
         now = Clock::now();
         if (g_inline_repeat.enabled && now >= g_inline_repeat.next_fire) {
-            bool ok = send_can_bytes(fd, g_inline_repeat.can_id, g_inline_repeat.data);
-            char hex_buf[64];
-            std::snprintf(hex_buf, sizeof(hex_buf), "TX[Inline ID:0x%03X DLC:%zu]%s",
-                          g_inline_repeat.can_id, g_inline_repeat.data.size(),
-                          ok ? "" : " FAILED");
-            print_message_above(hex_buf);
+            bool ok = false;
+            std::string msg;
+            
+            if (g_inline_repeat.is_can) {
+                // CAN mode
+                if (g_inline_repeat.is_hex) {
+                    ok = send_can_bytes(fd, g_inline_repeat.can_id, g_inline_repeat.data);
+                    char buf[64];
+                    std::snprintf(buf, sizeof(buf), "TX[Inline ID:0x%03X DLC:%zu]%s",
+                                  g_inline_repeat.can_id, g_inline_repeat.data.size(),
+                                  ok ? "" : " FAILED");
+                    msg = buf;
+                } else {
+                    // CAN text mode
+                    struct can_frame frame{};
+                    frame.can_id = g_inline_repeat.can_id;
+                    frame.can_dlc = static_cast<uint8_t>(std::min(g_inline_repeat.text_data.size(), size_t(8)));
+                    std::memcpy(frame.data, g_inline_repeat.text_data.c_str(), frame.can_dlc);
+                    ssize_t w = write(fd, &frame, sizeof(frame));
+                    ok = (w == sizeof(frame));
+                    char buf[64];
+                    std::snprintf(buf, sizeof(buf), "TX[Inline ID:0x%03X \"%s\"]%s",
+                                  g_inline_repeat.can_id, g_inline_repeat.text_data.c_str(),
+                                  ok ? "" : " FAILED");
+                    msg = buf;
+                }
+            } else {
+                // Serial mode
+                if (g_inline_repeat.is_hex) {
+                    ssize_t w = write(fd, g_inline_repeat.data.data(), g_inline_repeat.data.size());
+                    ok = (w == static_cast<ssize_t>(g_inline_repeat.data.size()));
+                    char buf[64];
+                    std::snprintf(buf, sizeof(buf), "TX[Inline %zu bytes]%s",
+                                  g_inline_repeat.data.size(), ok ? "" : " FAILED");
+                    msg = buf;
+                } else {
+                    // Serial text mode
+                    std::string send_data = g_inline_repeat.text_data;
+                    if (g_inline_repeat.append_crlf) send_data += "\r\n";
+                    ssize_t w = write(fd, send_data.c_str(), send_data.size());
+                    ok = (w == static_cast<ssize_t>(send_data.size()));
+                    char buf[128];
+                    std::snprintf(buf, sizeof(buf), "TX[Inline \"%s\"]%s",
+                                  g_inline_repeat.text_data.c_str(), ok ? "" : " FAILED");
+                    msg = buf;
+                }
+            }
+            
+            print_message_above(msg);
             g_inline_repeat.next_fire = now + 
                 std::chrono::milliseconds(g_inline_repeat.interval_ms);
         }
@@ -1220,11 +1360,12 @@ int main(int argc, char* argv[])
                 const char* line = rl_line_buffer;
                 std::string new_prompt;
 
+                // Extract only data portion, excluding flags like -id, -r, -t
+                std::string data_only = extract_hex_bytes_only(line);
+
                 if ((*g_cfg)["mode"] == "hex") {
-                    // Extract only hex bytes, excluding flags like -id, -r, -t
-                    std::string hex_only = extract_hex_bytes_only(line);
                     std::string hex;
-                    for (char c : hex_only) {
+                    for (char c : data_only) {
                         if (!std::isspace(static_cast<unsigned char>(c))) {
                             hex.push_back(c);
                         }
@@ -1232,7 +1373,7 @@ int main(int argc, char* argv[])
                     size_t bytes = hex.size() / 2;
                     new_prompt = "[" + std::to_string(bytes) + "b] > ";
                 } else {
-                    size_t bytes = std::strlen(line);
+                    size_t bytes = data_only.size();
                     if (*g_append_crlf) bytes += 2;
                     new_prompt = "[" + std::to_string(bytes) + "b] > ";
                 }

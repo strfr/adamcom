@@ -70,19 +70,26 @@ Send multiple presets simultaneously with independent intervals:
 /ra               # Stop all repeating presets
 ```
 
-## Inline Repeat Mode (CAN Hex)
+## Inline Repeat Mode
 
-In hex mode (`/mode hex`), send arbitrary data with inline flags:
+Send arbitrary data with inline flags (works in all modes):
 
 ```
-FF FF FF FF FF FF FF FC -id 0x03           # Send to specific CAN ID
-AA BB CC DD -r                              # Repeat every 1000ms (default)
-AA BB CC DD -id 0x123 -r -t 100            # Repeat to ID 0x123 every 100ms
-/rs stop                                    # Stop inline repeat
-/ra                                         # Stop all repeats
+# Hex mode examples:
+FF FF FF FF -r                    # Repeat every 1000ms (default)
+AA BB CC DD -r -t 100             # Repeat every 100ms
+AA BB CC DD -id 0x123 -r          # CAN: Repeat to specific ID
+
+# Text mode examples:
+hello world -r -t 500             # Repeat text every 500ms
+ATZ -r -t 1000                    # Repeat AT command every second
+
+# Control:
+/rs stop                          # Stop inline repeat
+/ra                               # Stop all repeats
 ```
 
-Flags can appear anywhere in the line; only hex bytes are sent.
+Flags (`-r`, `-t`, `-id`) can appear anywhere; only data is sent.
 
 ## Configuration
 
